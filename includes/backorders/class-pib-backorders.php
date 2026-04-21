@@ -57,6 +57,52 @@ final class PIB_Backorders {
 		add_shortcode( 'portal_backorders', array( $this, 'render_shortcode' ) );
 		add_action( 'admin_post_nopriv_pib_backorders_export', array( $this, 'handle_export' ) );
 		add_action( 'admin_post_pib_backorders_export', array( $this, 'handle_export' ) );
+		add_action( 'pib_register_portal_modules', array( $this, 'register_portal_module' ), 20, 2 );
+	}
+
+	/**
+	 * Register backorders feature into portal modules registry.
+	 *
+	 * @param PIB_Portal_Modules $registry Portal module registry.
+	 * @param PIB_Plugin         $plugin   Plugin container.
+	 *
+	 * @return void
+	 */
+	public function register_portal_module( $registry, $plugin ) {
+		if ( ! $registry instanceof PIB_Portal_Modules ) {
+			return;
+		}
+
+		$registry->register_module(
+			'backorders',
+			array(
+				'label'             => 'Backorders',
+				'description'       => 'View account-scoped backorders and export CSV reports.',
+				'destination'       => '/dashboard/backorders',
+				'shortcode'         => 'portal_backorders',
+				'cta_label'         => 'View Backorders',
+				'icon'              => 'dashicons-list-view',
+				'requires_auth'     => true,
+				'requires_identity' => true,
+				'source'            => 'core',
+				'priority'          => 20,
+				'enabled_callback'  => array( $this, 'is_portal_module_enabled' ),
+			)
+		);
+	}
+
+	/**
+	 * Determine whether backorders portal module is enabled.
+	 *
+	 * @param array<string,mixed>      $module   Module definition.
+	 * @param array<string,mixed>      $settings Plugin settings.
+	 * @param int                      $user_id  User ID.
+	 * @param array<string,mixed>|null $identity Identity context.
+	 *
+	 * @return bool
+	 */
+	public function is_portal_module_enabled( $module, $settings, $user_id, $identity ) {
+		return ! empty( $settings['backorders_enabled'] );
 	}
 
 	/**

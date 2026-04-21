@@ -20,14 +20,16 @@ final class PIB_JWT_Verifier {
 	 * @param string $secret          Shared secret.
 	 * @param string $expected_issuer Expected issuer claim.
 	 * @param int    $leeway_seconds  Time leeway for claim checks.
+	 * @param string $expected_audience Expected audience claim.
 	 *
 	 * @return array<string, mixed>|WP_Error
 	 */
-	public static function verify_hs256( $token, $secret, $expected_issuer = '', $leeway_seconds = 30 ) {
+	public static function verify_hs256( $token, $secret, $expected_issuer = '', $leeway_seconds = 30, $expected_audience = '' ) {
 		$token           = trim( (string) $token );
 		$secret          = (string) $secret;
 		$expected_issuer = trim( (string) $expected_issuer );
 		$leeway_seconds  = max( 0, absint( $leeway_seconds ) );
+		$expected_audience = trim( (string) $expected_audience );
 
 		if ( '' === $token ) {
 			return new WP_Error( 'pib_missing_token', 'Missing handoff token.' );
@@ -100,6 +102,26 @@ final class PIB_JWT_Verifier {
 			}
 		}
 
+		if ( '' !== $expected_audience ) {
+			$aud = isset( $claims['aud'] ) ? $claims['aud'] : '';
+			$audiences = array();
+
+			if ( is_string( $aud ) ) {
+				$audiences[] = $aud;
+			} elseif ( is_array( $aud ) ) {
+				foreach ( $aud as $aud_value ) {
+					if ( is_string( $aud_value ) ) {
+						$audiences[] = $aud_value;
+					}
+				}
+			}
+
+			$audiences = array_map( 'trim', $audiences );
+			if ( ! in_array( $expected_audience, $audiences, true ) ) {
+				return new WP_Error( 'pib_invalid_audience', 'Token audience is not trusted.' );
+			}
+		}
+
 		if ( empty( $claims['jti'] ) || ! is_string( $claims['jti'] ) ) {
 			return new WP_Error( 'pib_missing_jti', 'Token is missing a jti claim.' );
 		}
@@ -130,4 +152,3 @@ final class PIB_JWT_Verifier {
 		return $decoded;
 	}
 }
-

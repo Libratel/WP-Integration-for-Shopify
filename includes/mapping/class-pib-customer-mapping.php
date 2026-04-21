@@ -33,6 +33,13 @@ final class PIB_Customer_Mapping {
 	private $plugin;
 
 	/**
+	 * Request-local identity context cache keyed by user ID.
+	 *
+	 * @var array<int, array<string, mixed>|null>
+	 */
+	private $identity_context_cache = array();
+
+	/**
 	 * Singleton accessor.
 	 *
 	 * @param PIB_Plugin|null $plugin Plugin container.
@@ -115,6 +122,7 @@ final class PIB_Customer_Mapping {
 		$shopify_customer_id = self::customer_id_from_claims( $claims );
 		$company_id          = self::company_id_from_claims( $claims );
 		$email               = isset( $claims['email'] ) ? sanitize_email( (string) $claims['email'] ) : '';
+		$resolution_action   = 'upsert';
 
 		if ( '' === $shopify_customer_id ) {
 			return $resolved_user;
@@ -122,28 +130,93 @@ final class PIB_Customer_Mapping {
 
 		$mapping = $this->find_by_customer_company( $shopify_customer_id, $company_id );
 		if ( $mapping ) {
-			$user = get_user_by( 'id', absint( $mapping['wp_user_id'] ) );
-			if ( $user instanceof WP_User ) {
-				$this->touch_mapping( (int) $mapping['id'], $email );
-				$this->set_active_mapping_for_user( $user->ID, (int) $mapping['id'] );
-				do_action( 'pib_mapping_upsert', $mapping, 'touch' );
-				return $user;
+			$status = isset( $mapping['status'] ) ? sanitize_key( (string) $mapping['status'] ) : '';
+			if ( 'active' !== $status ) {
+				$this->emit_mapping_resolution_denied(
+					'mapping_not_active',
+					array(
+						'mapping_id'          => isset( $mapping['id'] ) ? absint( $mapping['id'] ) : 0,
+						'shopify_customer_id' => $shopify_customer_id,
+						'company_id'          => $company_id,
+						'status'              => $status,
+					)
+				);
+				return false;
 			}
+
+			$mapped_user_id = isset( $mapping['wp_user_id'] ) ? absint( $mapping['wp_user_id'] ) : 0;
+			if ( $mapped_user_id > 0 ) {
+				$user = get_user_by( 'id', $mapped_user_id );
+				if ( $user instanceof WP_User ) {
+					$this->touch_mapping( (int) $mapping['id'], $email );
+					$this->set_active_mapping_for_user( $user->ID, (int) $mapping['id'] );
+					do_action( 'pib_mapping_upsert', $mapping, 'touch' );
+					return $user;
+				}
+			}
+
+			$resolution_action = 'recover_mapping';
 		}
 
-		$user = $resolved_user;
+		$user = false;
+		if ( $resolved_user instanceof WP_User ) {
+			if ( $this->user_has_conflicting_customer_mappings( $resolved_user->ID, $shopify_customer_id ) ) {
+				$this->emit_mapping_resolution_denied(
+					'hint_user_conflict',
+					array(
+						'user_id'             => $resolved_user->ID,
+						'shopify_customer_id' => $shopify_customer_id,
+						'company_id'          => $company_id,
+					)
+				);
+				return false;
+			}
+
+			$user              = $resolved_user;
+			$resolution_action = 'resolved_hint';
+		}
 
 		$auto_link_by_email = ! empty( $settings['auto_link_existing_users_by_email'] );
 		if ( ! $user && $auto_link_by_email && '' !== $email ) {
-			$user = get_user_by( 'email', $email );
+			$email_link_user = $this->resolve_guarded_email_link_user( $email, $shopify_customer_id );
+			if ( is_wp_error( $email_link_user ) ) {
+				$this->emit_mapping_resolution_denied(
+					$email_link_user->get_error_code(),
+					array(
+						'email'               => $email,
+						'shopify_customer_id' => $shopify_customer_id,
+						'company_id'          => $company_id,
+					)
+				);
+				return false;
+			}
+			if ( $email_link_user instanceof WP_User ) {
+				$user              = $email_link_user;
+				$resolution_action = 'email_link';
+			}
 		}
 
 		$auto_create = ! empty( $settings['auto_create_users'] );
 		if ( ! $user && $auto_create ) {
 			$user = $this->create_wordpress_user_from_claims( $claims, (string) $settings['new_user_role'] );
+			if ( $user instanceof WP_User ) {
+				$resolution_action = 'auto_create';
+			}
 		}
 
 		if ( ! $user instanceof WP_User ) {
+			return false;
+		}
+
+		if ( $this->user_has_conflicting_customer_mappings( $user->ID, $shopify_customer_id ) ) {
+			$this->emit_mapping_resolution_denied(
+				'user_conflicting_customer_mapping',
+				array(
+					'user_id'             => $user->ID,
+					'shopify_customer_id' => $shopify_customer_id,
+					'company_id'          => $company_id,
+				)
+			);
 			return false;
 		}
 
@@ -154,15 +227,101 @@ final class PIB_Customer_Mapping {
 			$email
 		);
 
-		if ( $mapping_id > 0 ) {
-			$this->set_active_mapping_for_user( $user->ID, $mapping_id );
-			$mapping = $this->find_by_id( $mapping_id );
-			if ( $mapping ) {
-				do_action( 'pib_mapping_upsert', $mapping, 'upsert' );
-			}
+		if ( $mapping_id <= 0 ) {
+			$this->emit_mapping_resolution_denied(
+				'mapping_upsert_failed',
+				array(
+					'user_id'             => $user->ID,
+					'shopify_customer_id' => $shopify_customer_id,
+					'company_id'          => $company_id,
+				)
+			);
+			return false;
+		}
+
+		$this->set_active_mapping_for_user( $user->ID, $mapping_id );
+		$mapping = $this->find_by_id( $mapping_id );
+		if ( $mapping ) {
+			do_action( 'pib_mapping_upsert', $mapping, $resolution_action );
 		}
 
 		return $user;
+	}
+
+	/**
+	 * Resolve email-based link target with conflict guards.
+	 *
+	 * @param string $email               Customer email claim.
+	 * @param string $shopify_customer_id Shopify customer ID.
+	 *
+	 * @return WP_User|WP_Error|false
+	 */
+	private function resolve_guarded_email_link_user( $email, $shopify_customer_id ) {
+		$email = sanitize_email( (string) $email );
+		if ( '' === $email || ! is_email( $email ) ) {
+			return false;
+		}
+
+		$user = get_user_by( 'email', $email );
+		if ( ! $user instanceof WP_User ) {
+			return false;
+		}
+
+		if ( $this->user_has_conflicting_customer_mappings( $user->ID, $shopify_customer_id ) ) {
+			return new WP_Error(
+				'pib_email_link_conflict',
+				'Existing user email belongs to a different active Shopify customer mapping.'
+			);
+		}
+
+		return $user;
+	}
+
+	/**
+	 * Check if user has active mappings for a different Shopify customer.
+	 *
+	 * @param int    $wp_user_id          WordPress user ID.
+	 * @param string $shopify_customer_id Shopify customer ID.
+	 *
+	 * @return bool
+	 */
+	private function user_has_conflicting_customer_mappings( $wp_user_id, $shopify_customer_id ) {
+		global $wpdb;
+
+		$wp_user_id          = absint( $wp_user_id );
+		$shopify_customer_id = trim( (string) $shopify_customer_id );
+
+		if ( $wp_user_id <= 0 || '' === $shopify_customer_id ) {
+			return false;
+		}
+
+		$table = self::table_name();
+		$count = $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$table} WHERE wp_user_id = %d AND status = %s AND shopify_customer_id <> %s",
+				$wp_user_id,
+				'active',
+				$shopify_customer_id
+			)
+		);
+
+		return absint( $count ) > 0;
+	}
+
+	/**
+	 * Emit guarded mapping resolution failure event for observability.
+	 *
+	 * @param string               $reason  Failure reason key.
+	 * @param array<string, mixed> $context Additional context.
+	 *
+	 * @return void
+	 */
+	private function emit_mapping_resolution_denied( $reason, $context = array() ) {
+		$payload            = is_array( $context ) ? $context : array();
+		$payload['reason']  = sanitize_key( (string) $reason );
+		$payload['user_id'] = isset( $payload['user_id'] ) ? absint( $payload['user_id'] ) : 0;
+
+		do_action( 'pib_mapping_resolution_denied', $payload['reason'], $payload );
 	}
 
 	/**
@@ -178,25 +337,33 @@ final class PIB_Customer_Mapping {
 			return null;
 		}
 
+		if ( array_key_exists( $user_id, $this->identity_context_cache ) ) {
+			return $this->identity_context_cache[ $user_id ];
+		}
+
 		$mapping_id = absint( get_user_meta( $user_id, self::META_ACTIVE_MAPPING_ID, true ) );
 		if ( $mapping_id <= 0 ) {
+			$this->identity_context_cache[ $user_id ] = null;
 			return null;
 		}
 
 		$mapping = $this->find_by_id( $mapping_id );
 		if ( ! $mapping ) {
+			$this->identity_context_cache[ $user_id ] = null;
 			return null;
 		}
 
 		if ( absint( $mapping['wp_user_id'] ) !== $user_id ) {
+			$this->identity_context_cache[ $user_id ] = null;
 			return null;
 		}
 
 		if ( 'active' !== (string) $mapping['status'] ) {
+			$this->identity_context_cache[ $user_id ] = null;
 			return null;
 		}
 
-		return array(
+		$context = array(
 			'mapping_id'           => absint( $mapping['id'] ),
 			'wp_user_id'           => absint( $mapping['wp_user_id'] ),
 			'shopify_customer_id'  => (string) $mapping['shopify_customer_id'],
@@ -204,6 +371,10 @@ final class PIB_Customer_Mapping {
 			'email'                => (string) $mapping['email'],
 			'status'               => (string) $mapping['status'],
 		);
+
+		$this->identity_context_cache[ $user_id ] = $context;
+
+		return $context;
 	}
 
 	/**
@@ -341,6 +512,78 @@ final class PIB_Customer_Mapping {
 	}
 
 	/**
+	 * Create or update a mapping from admin tools.
+	 *
+	 * @param string $shopify_customer_id Shopify customer ID.
+	 * @param string $company_id          Company/account ID.
+	 * @param int    $wp_user_id          WordPress user ID.
+	 * @param string $email               Optional email.
+	 * @param string $status              Desired status.
+	 *
+	 * @return array<string, mixed>|WP_Error
+	 */
+	public function admin_upsert_mapping( $shopify_customer_id, $company_id, $wp_user_id, $email = '', $status = 'active' ) {
+		$shopify_customer_id = trim( sanitize_text_field( (string) $shopify_customer_id ) );
+		$company_id          = trim( sanitize_text_field( (string) $company_id ) );
+		$wp_user_id          = absint( $wp_user_id );
+		$email               = sanitize_email( (string) $email );
+		$status              = sanitize_key( (string) $status );
+
+		if ( '' === $shopify_customer_id ) {
+			return new WP_Error( 'pib_admin_missing_customer_id', 'Shopify customer ID is required.' );
+		}
+		if ( $wp_user_id <= 0 ) {
+			return new WP_Error( 'pib_admin_invalid_user', 'A valid WordPress user is required.' );
+		}
+
+		$user = get_user_by( 'id', $wp_user_id );
+		if ( ! $user instanceof WP_User ) {
+			return new WP_Error( 'pib_admin_user_not_found', 'WordPress user could not be found.' );
+		}
+
+		if ( $this->user_has_conflicting_customer_mappings( $wp_user_id, $shopify_customer_id ) ) {
+			return new WP_Error(
+				'pib_admin_user_conflict',
+				'Selected WordPress user is actively mapped to a different Shopify customer.'
+			);
+		}
+
+		$mapping_id = $this->upsert_mapping(
+			$shopify_customer_id,
+			$company_id,
+			$wp_user_id,
+			$email
+		);
+
+		if ( $mapping_id <= 0 ) {
+			return new WP_Error( 'pib_admin_mapping_upsert_failed', 'Unable to create or update mapping record.' );
+		}
+
+		if ( ! in_array( $status, array( 'active', 'blocked', 'archived' ), true ) ) {
+			$status = 'active';
+		}
+		if ( 'active' !== $status ) {
+			$this->update_mapping(
+				$mapping_id,
+				array(
+					'status' => $status,
+				)
+			);
+		}
+
+		$mapping = $this->find_by_id( $mapping_id );
+		if ( ! $mapping ) {
+			return new WP_Error( 'pib_admin_mapping_missing', 'Mapping record could not be loaded after update.' );
+		}
+
+		if ( 'active' === $status ) {
+			do_action( 'pib_mapping_upsert', $mapping, 'admin_upsert' );
+		}
+
+		return $mapping;
+	}
+
+	/**
 	 * Update mapping record from admin tool actions.
 	 *
 	 * @param int                  $mapping_id Mapping ID.
@@ -369,7 +612,7 @@ final class PIB_Customer_Mapping {
 
 		if ( isset( $fields['wp_user_id'] ) ) {
 			$wp_user_id = absint( $fields['wp_user_id'] );
-			if ( $wp_user_id > 0 ) {
+			if ( $wp_user_id > 0 && get_user_by( 'id', $wp_user_id ) instanceof WP_User ) {
 				$data['wp_user_id'] = $wp_user_id;
 				$format[]           = '%d';
 			}
@@ -506,7 +749,6 @@ final class PIB_Customer_Mapping {
 			ON DUPLICATE KEY UPDATE
 				wp_user_id = VALUES(wp_user_id),
 				email = VALUES(email),
-				status = 'active',
 				updated_at = VALUES(updated_at),
 				last_seen_at = VALUES(last_seen_at)
 		";
@@ -587,6 +829,7 @@ final class PIB_Customer_Mapping {
 		}
 
 		update_user_meta( $wp_user_id, self::META_ACTIVE_MAPPING_ID, $mapping_id );
+		unset( $this->identity_context_cache[ $wp_user_id ] );
 	}
 
 	/**
@@ -605,7 +848,7 @@ final class PIB_Customer_Mapping {
 
 		$existing = get_user_by( 'email', $email );
 		if ( $existing instanceof WP_User ) {
-			return $existing;
+			return false;
 		}
 
 		$base_username = '';

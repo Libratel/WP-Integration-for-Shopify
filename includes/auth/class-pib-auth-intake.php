@@ -2,6 +2,11 @@
 /**
  * Auth intake endpoint.
  *
+ * JWT handoff flow:
+ * Shopify/app side redirects back to this endpoint with:
+ * - token (required)
+ * - state (optional)
+ *
  * @package PortalIdentityBridge
  */
 
@@ -10,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * Receives signed Shopify handoff tokens and creates WP sessions.
+ * Receives verified Shopify JWT handoff payloads and creates WP sessions.
  */
 final class PIB_Auth_Intake {
 	/**
@@ -31,7 +36,6 @@ final class PIB_Auth_Intake {
 	 * Singleton accessor.
 	 *
 	 * @param PIB_Plugin|null $plugin Plugin container.
-	 *
 	 * @return PIB_Auth_Intake|null
 	 */
 	public static function instance( $plugin = null ) {
@@ -59,7 +63,7 @@ final class PIB_Auth_Intake {
 	}
 
 	/**
-	 * Handle signed handoff token intake.
+	 * Handle customer identity intake from Shopify/app handoff.
 	 *
 	 * @return void
 	 */
@@ -67,54 +71,146 @@ final class PIB_Auth_Intake {
 		nocache_headers();
 
 		$settings = $this->plugin->get_settings();
+
 		if ( PIB_Security::is_auth_rate_limited( (int) $settings['auth_failure_limit'] ) ) {
 			$this->fail_and_exit( 'pib_auth_rate_limited', 'Too many failed attempts. Please try again later.', 429, $settings );
 		}
 
-		$token = '';
-		if ( isset( $_REQUEST['token'] ) && is_scalar( $_REQUEST['token'] ) ) {
-			$token = sanitize_text_field( wp_unslash( (string) $_REQUEST['token'] ) );
-		}
+		$token = $this->request_scalar_text( 'token' );
+		$state = $this->request_scalar_text( 'state' ); // Optional. Reserved for future/state correlation.
 
 		if ( '' === $token ) {
 			$this->fail_and_exit( 'pib_missing_token', 'Missing handoff token.', 400, $settings );
 		}
 
-		$claims = PIB_JWT_Verifier::verify_hs256(
+		$shared_secret = '';
+		if ( isset( $settings['token_secret'] ) && is_string( $settings['token_secret'] ) ) {
+			$shared_secret = trim( $settings['token_secret'] );
+		}
+
+		if ( '' === $shared_secret ) {
+			$this->fail_and_exit( 'pib_missing_shared_secret', 'Shared secret is not configured.', 500, $settings );
+		}
+
+		$verified_claims = PIB_JWT_Verifier::verify_hs256(
 			$token,
-			(string) $settings['token_secret'],
-			(string) $settings['expected_issuer'],
-			(int) $settings['leeway_seconds']
+			$shared_secret,
+			isset( $settings['expected_issuer'] ) ? (string) $settings['expected_issuer'] : '',
+			isset( $settings['leeway_seconds'] ) ? absint( $settings['leeway_seconds'] ) : 30,
+			$this->expected_audience( $settings )
 		);
 
-		if ( is_wp_error( $claims ) ) {
-			$this->fail_and_exit( $claims->get_error_code(), $claims->get_error_message(), 403, $settings );
+		if ( is_wp_error( $verified_claims ) ) {
+			$status = 'pib_missing_token' === $verified_claims->get_error_code() ? 400 : 403;
+			$this->fail_and_exit(
+				$verified_claims->get_error_code(),
+				$verified_claims->get_error_message(),
+				$status,
+				$settings
+			);
 		}
 
-		$claims['shopify_customer_id'] = PIB_Customer_Mapping::customer_id_from_claims( $claims );
-		$claims['company_id']          = PIB_Customer_Mapping::company_id_from_claims( $claims );
-
-		if ( '' === $claims['shopify_customer_id'] ) {
-			$this->fail_and_exit( 'pib_missing_customer_id', 'Token is missing a stable customer identifier.', 403, $settings, $claims );
+		$shopify_customer_id = PIB_Customer_Mapping::customer_id_from_claims( $verified_claims );
+		$company_id          = PIB_Customer_Mapping::company_id_from_claims( $verified_claims );
+		$email               = isset( $verified_claims['email'] ) ? sanitize_email( (string) $verified_claims['email'] ) : '';
+		if ( '' === $state && isset( $verified_claims['state'] ) && is_scalar( $verified_claims['state'] ) ) {
+			$state = sanitize_text_field( (string) $verified_claims['state'] );
 		}
 
-		$dest = PIB_Destination::sanitize_destination(
-			isset( $claims['dest'] ) ? (string) $claims['dest'] : '',
-			(string) $settings['default_destination']
-		);
+		if ( '' === $shopify_customer_id ) {
+			$this->fail_and_exit( 'pib_missing_customer_id', 'Missing customer ID claim.', 403, $settings, $verified_claims );
+		}
 
+		if ( ! empty( $settings['require_company_id'] ) && '' === $company_id ) {
+			$this->fail_and_exit( 'pib_missing_company_id', 'Missing company/account claim.', 403, $settings, $verified_claims );
+		}
+
+		$dest_raw = isset( $verified_claims['dest'] ) ? (string) $verified_claims['dest'] : '';
+		if ( '' === trim( $dest_raw ) ) {
+			$this->fail_and_exit( 'pib_missing_dest', 'Missing destination claim.', 403, $settings, $verified_claims );
+		}
+
+		$dest = PIB_Destination::sanitize_destination( $dest_raw, (string) $settings['default_destination'] );
 		if ( ! PIB_Destination::is_allowed( $dest, $settings['allowed_destination_prefixes'] ) ) {
-			$this->fail_and_exit( 'pib_invalid_dest', 'Destination is not allowed.', 403, $settings, $claims );
+			$this->fail_and_exit( 'pib_invalid_dest', 'Destination is not allowed.', 403, $settings, $verified_claims );
 		}
 
-		$replay_check = $this->verify_and_store_jti( $claims, (int) $settings['leeway_seconds'] );
-		if ( is_wp_error( $replay_check ) ) {
-			$this->fail_and_exit( $replay_check->get_error_code(), $replay_check->get_error_message(), 403, $settings, $claims );
+		$jti         = isset( $verified_claims['jti'] ) ? sanitize_text_field( (string) $verified_claims['jti'] ) : '';
+		$exp         = isset( $verified_claims['exp'] ) ? (int) $verified_claims['exp'] : 0;
+		$now         = time();
+		$leeway      = isset( $settings['leeway_seconds'] ) ? absint( $settings['leeway_seconds'] ) : 30;
+
+		if ( '' === $jti ) {
+			$this->fail_and_exit( 'pib_missing_jti', 'Token is missing a jti claim.', 403, $settings, $verified_claims );
+		}
+
+		$replay_ttl  = max( 60, ( $exp + $leeway ) - $now + 30 );
+		$replay_key  = 'pib_jti_' . md5( $jti );
+
+		if ( get_transient( $replay_key ) ) {
+			$this->fail_and_exit(
+				'pib_replay_detected',
+				'Replay detected for this authentication handoff.',
+				403,
+				$settings,
+				$verified_claims
+			);
+		}
+
+		// Optional state verification hook.
+		// Return WP_Error from filter to fail verification.
+		$state_check = apply_filters(
+			'pib_verify_handoff_state',
+			true,
+			$state,
+			array(
+				'shopify_customer_id' => $shopify_customer_id,
+				'company_id'          => $company_id,
+				'email'               => $email,
+				'dest'                => $dest,
+				'jti'                 => $jti,
+			)
+		);
+
+		if ( is_wp_error( $state_check ) ) {
+			$this->fail_and_exit(
+				'pib_invalid_state',
+				$state_check->get_error_message(),
+				403,
+				$settings
+			);
+		}
+
+		// Store replay marker for the remaining token lifetime plus small buffer.
+		set_transient( $replay_key, 1, $replay_ttl );
+
+		$claims = array(
+			'shopify_customer_id' => $shopify_customer_id,
+			'company_id'          => $company_id,
+			'email'               => $email,
+			'dest'                => $dest,
+			'jti'                 => $jti,
+			'state'               => $state,
+			'iss'                 => isset( $verified_claims['iss'] ) ? sanitize_text_field( (string) $verified_claims['iss'] ) : '',
+			'aud'                 => isset( $verified_claims['aud'] ) ? $verified_claims['aud'] : '',
+			'exp'                 => $exp,
+			'iat'                 => isset( $verified_claims['iat'] ) ? (int) $verified_claims['iat'] : 0,
+			'nbf'                 => isset( $verified_claims['nbf'] ) ? (int) $verified_claims['nbf'] : 0,
+		);
+
+		if ( isset( $verified_claims['wp_user_id'] ) ) {
+			$claims['wp_user_id'] = absint( $verified_claims['wp_user_id'] );
 		}
 
 		$user = $this->resolve_wordpress_user( $claims );
 		if ( ! $user instanceof WP_User ) {
-			$this->fail_and_exit( 'pib_user_not_found', 'No linked WordPress user found for this identity.', 403, $settings, $claims );
+			$this->fail_and_exit(
+				'pib_user_not_found',
+				'No linked WordPress user found for this identity.',
+				403,
+				$settings,
+				$claims
+			);
 		}
 
 		wp_set_current_user( $user->ID );
@@ -129,14 +225,9 @@ final class PIB_Auth_Intake {
 	}
 
 	/**
-	 * Resolve WP user from token claims.
+	 * Resolve WP user from verified claims.
 	 *
-	 * Phase 5 behavior:
-	 * - Prefer wp_user_id if provided.
-	 * - Hand off to mapping module for stable customer mapping resolution.
-	 *
-	 * @param array<string, mixed> $claims Verified token claims.
-	 *
+	 * @param array<string, mixed> $claims Verified claim payload.
 	 * @return WP_User|false
 	 */
 	private function resolve_wordpress_user( $claims ) {
@@ -150,40 +241,26 @@ final class PIB_Auth_Intake {
 		}
 
 		/**
-		 * Filter allows mapping module to plug in stable key resolution.
+		 * Allow mapping module to resolve the stable user from verified claims.
 		 *
-		 * @param WP_User|false        $user   Resolved user object.
-		 * @param array<string, mixed> $claims Verified claims payload.
+		 * @param WP_User|false        $user   Current resolved user.
+		 * @param array<string,mixed>  $claims Verified claim payload.
 		 */
 		return apply_filters( 'pib_resolve_user_from_claims', $user, $claims );
 	}
 
 	/**
-	 * Enforce one-time token usage by jti.
+	 * Get a scalar request value sanitized as text.
 	 *
-	 * @param array<string, mixed> $claims         Verified claims.
-	 * @param int                  $leeway_seconds Clock skew leeway.
-	 *
-	 * @return true|WP_Error
+	 * @param string $key Request key.
+	 * @return string
 	 */
-	private function verify_and_store_jti( $claims, $leeway_seconds ) {
-		if ( empty( $claims['jti'] ) || ! is_string( $claims['jti'] ) ) {
-			return new WP_Error( 'pib_missing_jti', 'Missing jti claim.' );
+	private function request_scalar_text( $key ) {
+		if ( ! isset( $_REQUEST[ $key ] ) || ! is_scalar( $_REQUEST[ $key ] ) ) {
+			return '';
 		}
 
-		$jti = $claims['jti'];
-		$key = 'pib_jti_' . md5( $jti );
-
-		if ( get_transient( $key ) ) {
-			return new WP_Error( 'pib_replay_detected', 'Replay token detected.' );
-		}
-
-		$exp = isset( $claims['exp'] ) && is_numeric( $claims['exp'] ) ? (int) $claims['exp'] : time() + 60;
-		$ttl = max( 60, ( $exp - time() ) + max( 0, absint( $leeway_seconds ) ) );
-
-		set_transient( $key, 1, $ttl );
-
-		return true;
+		return sanitize_text_field( wp_unslash( (string) $_REQUEST[ $key ] ) );
 	}
 
 	/**
@@ -194,7 +271,6 @@ final class PIB_Auth_Intake {
 	 * @param int                  $status   HTTP status.
 	 * @param array<string, mixed> $settings Plugin settings.
 	 * @param array<string, mixed> $claims   Optional claim context.
-	 *
 	 * @return void
 	 */
 	private function fail_and_exit( $code, $message, $status, $settings, $claims = array() ) {
@@ -217,5 +293,30 @@ final class PIB_Auth_Intake {
 		status_header( absint( $status ) );
 		wp_safe_redirect( $redirect_url );
 		exit;
+	}
+
+	/**
+	 * Get expected audience value from settings.
+	 *
+	 * Keeps compatibility with legacy expected_audience while using client_id
+	 * as the preferred admin field.
+	 *
+	 * @param array<string, mixed> $settings Plugin settings.
+	 *
+	 * @return string
+	 */
+	private function expected_audience( $settings ) {
+		$settings = is_array( $settings ) ? $settings : array();
+
+		$audience = '';
+		if ( isset( $settings['expected_audience'] ) && is_string( $settings['expected_audience'] ) ) {
+			$audience = trim( $settings['expected_audience'] );
+		}
+
+		if ( '' === $audience && isset( $settings['client_id'] ) && is_string( $settings['client_id'] ) ) {
+			$audience = trim( $settings['client_id'] );
+		}
+
+		return $audience;
 	}
 }

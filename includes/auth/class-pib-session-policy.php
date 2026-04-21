@@ -10,7 +10,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * Enforces session lifetime/revalidation for bridge-authenticated users.
+ * Enforces identity-bound session lifetime/revalidation for bridge-authenticated users.
  */
 final class PIB_Session_Policy {
 	/**
@@ -27,6 +27,21 @@ final class PIB_Session_Policy {
 	 * Meta key: last revalidation timestamp.
 	 */
 	const META_LAST_REVALIDATED_AT = 'pib_last_revalidated_at';
+
+	/**
+	 * Meta key: bound Shopify customer ID for managed session.
+	 */
+	const META_BOUND_CUSTOMER_ID = 'pib_session_customer_id';
+
+	/**
+	 * Meta key: bound company/account ID for managed session.
+	 */
+	const META_BOUND_COMPANY_ID = 'pib_session_company_id';
+
+	/**
+	 * Meta key: bound mapping ID snapshot for managed session.
+	 */
+	const META_BOUND_MAPPING_ID = 'pib_session_mapping_id';
 
 	/**
 	 * Singleton.
@@ -69,6 +84,7 @@ final class PIB_Session_Policy {
 		$this->plugin = $plugin;
 
 		add_action( 'pib_auth_intake_success', array( $this, 'mark_managed_session' ), 10, 2 );
+		add_action( 'wp_login', array( $this, 'clear_managed_session_for_login' ), 20, 2 );
 		add_action( 'init', array( $this, 'enforce_policy' ), 2 );
 		add_action( 'admin_post_pib_logout', array( $this, 'handle_logout' ) );
 		add_action( 'admin_post_nopriv_pib_logout', array( $this, 'handle_logout' ) );
@@ -76,7 +92,7 @@ final class PIB_Session_Policy {
 	}
 
 	/**
-	 * Mark current user session as plugin-managed.
+	 * Mark current user session as plugin-managed and bind identity snapshot.
 	 *
 	 * @param array<string, mixed> $claims Claims payload.
 	 * @param int                  $user_id User ID.
@@ -89,10 +105,60 @@ final class PIB_Session_Policy {
 			return;
 		}
 
+		$claims      = is_array( $claims ) ? $claims : array();
+		$customer_id = PIB_Customer_Mapping::customer_id_from_claims( $claims );
+		$company_id  = PIB_Customer_Mapping::company_id_from_claims( $claims );
+		$mapping_id  = 0;
+		$identity    = PIB_Authorization::current_identity();
+		if ( is_array( $identity ) && ! empty( $identity['mapping_id'] ) ) {
+			$mapping_id = absint( $identity['mapping_id'] );
+		}
+
 		$now = time();
 		update_user_meta( $user_id, self::META_MANAGED, 1 );
 		update_user_meta( $user_id, self::META_STARTED_AT, $now );
 		update_user_meta( $user_id, self::META_LAST_REVALIDATED_AT, $now );
+		update_user_meta( $user_id, self::META_BOUND_CUSTOMER_ID, $customer_id );
+		update_user_meta( $user_id, self::META_BOUND_COMPANY_ID, $company_id );
+		update_user_meta( $user_id, self::META_BOUND_MAPPING_ID, $mapping_id );
+	}
+
+	/**
+	 * Clear managed markers for regular non-bridge logins.
+	 *
+	 * Bridge flow triggers wp_login first, then pib_auth_intake_success
+	 * re-establishes managed markers in the same request.
+	 *
+	 * @param string  $user_login User login.
+	 * @param WP_User $user       User object.
+	 *
+	 * @return void
+	 */
+	public function clear_managed_session_for_login( $user_login, $user ) {
+		unset( $user_login );
+		if ( ! $user instanceof WP_User ) {
+			return;
+		}
+
+		$this->clear_managed_session_meta( $user->ID );
+	}
+
+	/**
+	 * Determine whether current logged-in user has managed session markers.
+	 *
+	 * @return bool
+	 */
+	public static function is_current_session_managed() {
+		if ( ! is_user_logged_in() ) {
+			return false;
+		}
+
+		$user_id = get_current_user_id();
+		if ( $user_id <= 0 ) {
+			return false;
+		}
+
+		return absint( get_user_meta( $user_id, self::META_MANAGED, true ) ) === 1;
 	}
 
 	/**
@@ -110,7 +176,7 @@ final class PIB_Session_Policy {
 			return;
 		}
 
-		$is_managed = absint( get_user_meta( $user_id, self::META_MANAGED, true ) ) === 1;
+		$is_managed = self::is_current_session_managed();
 		if ( ! $is_managed ) {
 			return;
 		}
@@ -127,6 +193,15 @@ final class PIB_Session_Policy {
 
 		if ( ( $now - $started ) > $ttl ) {
 			$this->expire_session( 'pib_session_ttl_expired' );
+		}
+
+		if ( ! $this->session_identity_matches_binding( $user_id, $settings ) ) {
+			$this->expire_session(
+				'pib_session_identity_mismatch',
+				array(
+					'user_id' => $user_id,
+				)
+			);
 		}
 
 		if ( empty( $settings['periodic_revalidation_enabled'] ) ) {
@@ -146,6 +221,31 @@ final class PIB_Session_Policy {
 
 		$identity = PIB_Authorization::current_identity();
 		if ( ! is_array( $identity ) || empty( $identity['shopify_customer_id'] ) ) {
+			$this->expire_session(
+				'pib_session_revalidation_failed',
+				array(
+					'user_id' => $user_id,
+				)
+			);
+		}
+
+		$revalidation = apply_filters(
+			'pib_validate_managed_session_identity',
+			true,
+			$identity,
+			$user_id,
+			$settings
+		);
+
+		if ( is_wp_error( $revalidation ) ) {
+			$this->expire_session(
+				(string) $revalidation->get_error_code(),
+				array(
+					'user_id' => $user_id,
+				)
+			);
+		}
+		if ( false === $revalidation ) {
 			$this->expire_session(
 				'pib_session_revalidation_failed',
 				array(
@@ -204,16 +304,24 @@ final class PIB_Session_Policy {
 			wp_die( esc_html__( 'Invalid logout request.', 'portal-identity-bridge' ) );
 		}
 
+		$settings = $this->plugin->get_settings();
 		$user_id = get_current_user_id();
+		$identity = PIB_Authorization::current_identity();
+		$context = array(
+			'user_id'             => absint( $user_id ),
+			'shopify_customer_id' => is_array( $identity ) && isset( $identity['shopify_customer_id'] ) ? (string) $identity['shopify_customer_id'] : '',
+			'company_id'          => is_array( $identity ) && isset( $identity['company_id'] ) ? (string) $identity['company_id'] : '',
+		);
+
+		do_action( 'pib_logout_requested', absint( $user_id ), $context );
+
 		if ( $user_id > 0 ) {
-			delete_user_meta( $user_id, self::META_MANAGED );
-			delete_user_meta( $user_id, self::META_STARTED_AT );
-			delete_user_meta( $user_id, self::META_LAST_REVALIDATED_AT );
+			$this->clear_managed_session_meta( $user_id );
 		}
 
 		wp_logout();
 
-		$settings = $this->plugin->get_settings();
+		$local_redirect = $this->logged_out_redirect_url( $settings );
 		if ( ! empty( $settings['coordinated_logout_enabled'] ) ) {
 			$upstream = esc_url_raw( trim( (string) $settings['upstream_logout_url'] ) );
 			if ( '' !== $upstream ) {
@@ -223,16 +331,21 @@ final class PIB_Session_Policy {
 				}
 				$upstream = add_query_arg(
 					array(
-						$param => home_url( '/' ),
+						$param => $local_redirect,
 					),
 					$upstream
 				);
+				$context['redirect_url'] = $upstream;
+				$context['return_to']    = $local_redirect;
+				do_action( 'pib_logout_completed', absint( $user_id ), 'coordinated', $context );
 				wp_safe_redirect( $upstream );
 				exit;
 			}
 		}
 
-		wp_safe_redirect( home_url( '/?pib_logged_out=1' ) );
+		$context['redirect_url'] = $local_redirect;
+		do_action( 'pib_logout_completed', absint( $user_id ), 'local', $context );
+		wp_safe_redirect( $local_redirect );
 		exit;
 	}
 
@@ -263,9 +376,7 @@ final class PIB_Session_Policy {
 	private function expire_session( $reason, $context = array() ) {
 		$user_id = get_current_user_id();
 		if ( $user_id > 0 ) {
-			delete_user_meta( $user_id, self::META_MANAGED );
-			delete_user_meta( $user_id, self::META_STARTED_AT );
-			delete_user_meta( $user_id, self::META_LAST_REVALIDATED_AT );
+			$this->clear_managed_session_meta( $user_id );
 		}
 
 		do_action( 'pib_session_expired', $user_id, $reason, is_array( $context ) ? $context : array() );
@@ -303,5 +414,106 @@ final class PIB_Session_Policy {
 		}
 
 		return false;
+	}
+
+	/**
+	 * Validate active identity still matches session-bound identity snapshot.
+	 *
+	 * @param int                  $user_id  User ID.
+	 * @param array<string, mixed> $settings Plugin settings.
+	 *
+	 * @return bool
+	 */
+	private function session_identity_matches_binding( $user_id, $settings ) {
+		$user_id = absint( $user_id );
+		if ( $user_id <= 0 ) {
+			return false;
+		}
+
+		$identity = PIB_Authorization::current_identity();
+		if ( ! is_array( $identity ) || empty( $identity['shopify_customer_id'] ) ) {
+			return false;
+		}
+
+		$bound_customer = trim( (string) get_user_meta( $user_id, self::META_BOUND_CUSTOMER_ID, true ) );
+		$bound_company  = trim( (string) get_user_meta( $user_id, self::META_BOUND_COMPANY_ID, true ) );
+		$bound_mapping  = absint( get_user_meta( $user_id, self::META_BOUND_MAPPING_ID, true ) );
+
+		$current_customer = trim( (string) $identity['shopify_customer_id'] );
+		$current_company  = isset( $identity['company_id'] ) ? trim( (string) $identity['company_id'] ) : '';
+		$current_mapping  = isset( $identity['mapping_id'] ) ? absint( $identity['mapping_id'] ) : 0;
+
+		// Backfill binding keys for older managed sessions that predate this policy.
+		if ( '' === $bound_customer ) {
+			update_user_meta( $user_id, self::META_BOUND_CUSTOMER_ID, $current_customer );
+			$bound_customer = $current_customer;
+		}
+		if ( '' === $bound_company && '' !== $current_company ) {
+			update_user_meta( $user_id, self::META_BOUND_COMPANY_ID, $current_company );
+			$bound_company = $current_company;
+		}
+		if ( $bound_mapping <= 0 && $current_mapping > 0 ) {
+			update_user_meta( $user_id, self::META_BOUND_MAPPING_ID, $current_mapping );
+			$bound_mapping = $current_mapping;
+		}
+
+		if ( '' === $bound_customer || $bound_customer !== $current_customer ) {
+			return false;
+		}
+
+		if ( ! empty( $settings['require_company_id'] ) && ( '' === $current_company || '' === $bound_company ) ) {
+			return false;
+		}
+		if ( '' !== $bound_company && $bound_company !== $current_company ) {
+			return false;
+		}
+
+		if ( $bound_mapping > 0 && $current_mapping > 0 && $bound_mapping !== $current_mapping ) {
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Clear managed-session user meta markers.
+	 *
+	 * @param int $user_id User ID.
+	 *
+	 * @return void
+	 */
+	private function clear_managed_session_meta( $user_id ) {
+		$user_id = absint( $user_id );
+		if ( $user_id <= 0 ) {
+			return;
+		}
+
+		delete_user_meta( $user_id, self::META_MANAGED );
+		delete_user_meta( $user_id, self::META_STARTED_AT );
+		delete_user_meta( $user_id, self::META_LAST_REVALIDATED_AT );
+		delete_user_meta( $user_id, self::META_BOUND_CUSTOMER_ID );
+		delete_user_meta( $user_id, self::META_BOUND_COMPANY_ID );
+		delete_user_meta( $user_id, self::META_BOUND_MAPPING_ID );
+	}
+
+	/**
+	 * Build local logged-out destination URL.
+	 *
+	 * @param array<string, mixed> $settings Plugin settings.
+	 *
+	 * @return string
+	 */
+	private function logged_out_redirect_url( $settings ) {
+		$dest = PIB_Destination::sanitize_destination(
+			isset( $settings['failure_destination'] ) ? (string) $settings['failure_destination'] : '/',
+			'/'
+		);
+
+		return add_query_arg(
+			array(
+				'pib_logged_out' => '1',
+			),
+			PIB_Destination::to_absolute_url( $dest )
+		);
 	}
 }

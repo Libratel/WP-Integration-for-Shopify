@@ -27,7 +27,17 @@ final class PIB_Installer {
 		self::create_mapping_table();
 		self::create_audit_log_table();
 		self::initialize_settings();
+		self::ensure_audit_log_schedule();
 		update_option( 'pib_db_version', self::DB_VERSION );
+	}
+
+	/**
+	 * Run deactivation tasks.
+	 *
+	 * @return void
+	 */
+	public static function deactivate() {
+		self::clear_audit_log_schedule();
 	}
 
 	/**
@@ -43,6 +53,8 @@ final class PIB_Installer {
 			self::initialize_settings();
 			update_option( 'pib_db_version', self::DB_VERSION );
 		}
+
+		self::ensure_audit_log_schedule();
 	}
 
 	/**
@@ -121,5 +133,25 @@ final class PIB_Installer {
 		if ( null === $existing ) {
 			add_option( PIB_Plugin::OPTION_KEY, PIB_Plugin::default_settings() );
 		}
+	}
+
+	/**
+	 * Ensure audit-log trim cron job exists.
+	 *
+	 * @return void
+	 */
+	private static function ensure_audit_log_schedule() {
+		require_once PIB_PLUGIN_DIR . 'includes/admin/class-pib-audit-log.php';
+		PIB_Audit_Log::ensure_trim_schedule();
+	}
+
+	/**
+	 * Clear audit-log trim cron job.
+	 *
+	 * @return void
+	 */
+	private static function clear_audit_log_schedule() {
+		require_once PIB_PLUGIN_DIR . 'includes/admin/class-pib-audit-log.php';
+		PIB_Audit_Log::clear_trim_schedule();
 	}
 }

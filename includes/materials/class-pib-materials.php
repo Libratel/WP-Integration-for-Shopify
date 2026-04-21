@@ -14,6 +14,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 final class PIB_Materials {
 	/**
+	 * Option key for materials cache version.
+	 */
+	const CACHE_VERSION_OPTION = 'pib_materials_cache_version';
+
+	/**
 	 * Meta key for material file URL.
 	 */
 	const META_FILE_URL = '_pib_material_file_url';
@@ -70,6 +75,37 @@ final class PIB_Materials {
 		add_action( 'admin_post_nopriv_pib_material_download', array( $this, 'handle_download' ) );
 		add_action( 'admin_post_pib_material_download', array( $this, 'handle_download' ) );
 		add_shortcode( 'portal_materials', array( $this, 'render_materials_shortcode' ) );
+		add_action( 'pib_register_portal_modules', array( $this, 'register_portal_module' ), 20, 2 );
+	}
+
+	/**
+	 * Register materials feature into portal modules registry.
+	 *
+	 * @param PIB_Portal_Modules $registry Portal module registry.
+	 * @param PIB_Plugin         $plugin   Plugin container.
+	 *
+	 * @return void
+	 */
+	public function register_portal_module( $registry, $plugin ) {
+		if ( ! $registry instanceof PIB_Portal_Modules ) {
+			return;
+		}
+
+		$registry->register_module(
+			'materials',
+			array(
+				'label'             => 'Partner Materials',
+				'description'       => 'Access downloadable materials for your mapped company.',
+				'destination'       => '/materials',
+				'shortcode'         => 'portal_materials',
+				'cta_label'         => 'Browse Materials',
+				'icon'              => 'dashicons-media-document',
+				'requires_auth'     => true,
+				'requires_identity' => true,
+				'source'            => 'core',
+				'priority'          => 10,
+			)
+		);
 	}
 
 	/**
@@ -173,6 +209,7 @@ final class PIB_Materials {
 
 		update_post_meta( $post_id, self::META_FILE_URL, $file_url );
 		update_post_meta( $post_id, self::META_COMPANY_IDS, implode( "\n", $list ) );
+		$this->bump_materials_cache_version();
 	}
 
 	/**
@@ -190,6 +227,12 @@ final class PIB_Materials {
 			return '<p>Your portal account is not linked to a customer record yet.</p>';
 		}
 
+		$cache_key = $this->materials_cache_key( $identity );
+		$cached    = get_transient( $cache_key );
+		if ( is_string( $cached ) && '' !== $cached ) {
+			return $cached;
+		}
+
 		$posts = get_posts(
 			array(
 				'post_type'      => 'pib_material',
@@ -197,11 +240,16 @@ final class PIB_Materials {
 				'posts_per_page' => -1,
 				'orderby'        => 'title',
 				'order'          => 'ASC',
+				'no_found_rows'  => true,
+				'update_post_term_cache' => false,
+				'update_post_meta_cache' => true,
 			)
 		);
 
 		if ( empty( $posts ) ) {
-			return '<p>No materials are available at this time.</p>';
+			$output = '<p>No materials are available at this time.</p>';
+			$this->cache_materials_markup( $cache_key, $output );
+			return $output;
 		}
 
 		$items = array();
@@ -233,10 +281,14 @@ final class PIB_Materials {
 		}
 
 		if ( empty( $items ) ) {
-			return '<p>No materials are available for your company.</p>';
+			$output = '<p>No materials are available for your company.</p>';
+			$this->cache_materials_markup( $cache_key, $output );
+			return $output;
 		}
 
-		return '<ul class="pib-material-list">' . implode( '', $items ) . '</ul>';
+		$output = '<ul class="pib-material-list">' . implode( '', $items ) . '</ul>';
+		$this->cache_materials_markup( $cache_key, $output );
+		return $output;
 	}
 
 	/**
@@ -347,6 +399,65 @@ final class PIB_Materials {
 		}
 
 		return array_values( array_unique( $ids ) );
+	}
+
+	/**
+	 * Build scoped cache key for rendered material list.
+	 *
+	 * @param array<string, mixed> $identity Active identity context.
+	 *
+	 * @return string
+	 */
+	private function materials_cache_key( $identity ) {
+		$user_id       = get_current_user_id();
+		$company       = isset( $identity['company_id'] ) ? (string) $identity['company_id'] : '';
+		$customer      = isset( $identity['shopify_customer_id'] ) ? (string) $identity['shopify_customer_id'] : '';
+		$version       = $this->materials_cache_version();
+		$session_token = function_exists( 'wp_get_session_token' ) ? (string) wp_get_session_token() : '';
+		$nonce_tick    = function_exists( 'wp_nonce_tick' ) ? (int) wp_nonce_tick() : 0;
+
+		return 'pib_materials_' . md5( $user_id . '|' . $company . '|' . $customer . '|' . $version . '|' . $session_token . '|' . $nonce_tick );
+	}
+
+	/**
+	 * Resolve current materials cache version.
+	 *
+	 * @return int
+	 */
+	private function materials_cache_version() {
+		$version = absint( get_option( self::CACHE_VERSION_OPTION, 1 ) );
+		return max( 1, $version );
+	}
+
+	/**
+	 * Bump materials cache version after content changes.
+	 *
+	 * @return void
+	 */
+	private function bump_materials_cache_version() {
+		$version = $this->materials_cache_version() + 1;
+		update_option( self::CACHE_VERSION_OPTION, $version, false );
+	}
+
+	/**
+	 * Persist rendered materials markup into transient cache.
+	 *
+	 * @param string $cache_key Cache key.
+	 * @param string $markup    Rendered HTML.
+	 *
+	 * @return void
+	 */
+	private function cache_materials_markup( $cache_key, $markup ) {
+		if ( '' === $cache_key || '' === $markup ) {
+			return;
+		}
+
+		$ttl = absint( apply_filters( 'pib_materials_cache_ttl', 120 ) );
+		if ( $ttl <= 0 ) {
+			return;
+		}
+
+		set_transient( $cache_key, $markup, $ttl );
 	}
 
 	/**

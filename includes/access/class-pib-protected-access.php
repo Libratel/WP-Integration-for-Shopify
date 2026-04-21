@@ -69,8 +69,9 @@ final class PIB_Protected_Access {
 
 		$settings    = $this->plugin->get_settings();
 		$destination = PIB_Destination::current_request_destination();
+		$evaluation  = PIB_Protected_Route_Policy::evaluate_destination( $destination, $settings );
 
-		if ( ! PIB_Destination::is_allowed( $destination, $settings['protected_route_prefixes'] ) ) {
+		if ( empty( $evaluation['is_protected'] ) ) {
 			return;
 		}
 
@@ -78,15 +79,22 @@ final class PIB_Protected_Access {
 			return;
 		}
 
+		do_action( 'pib_protected_route_match', $destination, $evaluation, get_current_user_id() );
+
 		if ( ! is_user_logged_in() ) {
-			do_action( 'pib_protected_access_denied', 'login_required', $destination, 0 );
+			do_action( 'pib_protected_access_denied', 'login_required', $destination, 0, $evaluation );
 			$this->redirect_to_signin( $destination, 'pib_login_required' );
+		}
+
+		if ( ! empty( $settings['require_managed_session_for_protected_routes'] ) && ! PIB_Session_Policy::is_current_session_managed() ) {
+			do_action( 'pib_protected_access_denied', 'managed_session_required', $destination, get_current_user_id(), $evaluation );
+			$this->redirect_to_signin( $destination, 'pib_managed_session_required' );
 		}
 
 		if ( ! empty( $settings['require_active_mapping'] ) ) {
 			$identity = PIB_Authorization::current_identity();
 			if ( ! is_array( $identity ) || empty( $identity['shopify_customer_id'] ) ) {
-				do_action( 'pib_protected_access_denied', 'mapping_required', $destination, get_current_user_id() );
+				do_action( 'pib_protected_access_denied', 'mapping_required', $destination, get_current_user_id(), $evaluation );
 				$this->redirect_to_signin( $destination, 'pib_mapping_required' );
 			}
 		}

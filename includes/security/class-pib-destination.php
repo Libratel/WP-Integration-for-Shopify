@@ -62,11 +62,12 @@ final class PIB_Destination {
 	/**
 	 * Sanitize allowed path prefixes.
 	 *
-	 * @param mixed $raw Raw prefixes input.
+	 * @param mixed $raw              Raw prefixes input.
+	 * @param bool  $fallback_default Whether to apply /dashboard fallback when no prefixes remain.
 	 *
 	 * @return array<int, string>
 	 */
-	public static function sanitize_prefixes( $raw ) {
+	public static function sanitize_prefixes( $raw, $fallback_default = true ) {
 		$items = array();
 
 		if ( is_string( $raw ) ) {
@@ -113,7 +114,7 @@ final class PIB_Destination {
 
 		$prefixes = array_values( array_unique( $prefixes ) );
 
-		if ( empty( $prefixes ) ) {
+		if ( $fallback_default && empty( $prefixes ) ) {
 			$prefixes = array( '/dashboard' );
 		}
 
@@ -129,13 +130,26 @@ final class PIB_Destination {
 	 * @return bool
 	 */
 	public static function is_allowed( $destination, $prefixes ) {
+		return '' !== self::first_matching_prefix( $destination, $prefixes );
+	}
+
+	/**
+	 * Resolve first prefix that matches a destination.
+	 *
+	 * @param string             $destination      Internal destination.
+	 * @param array<int, string> $prefixes         Allowed path prefixes.
+	 * @param bool               $fallback_default Whether to apply default fallback during prefix sanitization.
+	 *
+	 * @return string Empty string when no prefix matches.
+	 */
+	public static function first_matching_prefix( $destination, $prefixes, $fallback_default = true ) {
 		$destination = self::sanitize_destination( $destination, '/' );
 		$path        = (string) wp_parse_url( $destination, PHP_URL_PATH );
-		$prefixes    = self::sanitize_prefixes( $prefixes );
+		$prefixes    = self::sanitize_prefixes( $prefixes, $fallback_default );
 
 		foreach ( $prefixes as $prefix ) {
 			if ( '/' === $prefix ) {
-				return true;
+				return $prefix;
 			}
 
 			if ( 0 === strpos( $path, $prefix ) ) {
@@ -143,21 +157,21 @@ final class PIB_Destination {
 				$path_length   = strlen( $path );
 
 				if ( $path_length === $prefix_length ) {
-					return true;
+					return $prefix;
 				}
 
 				if ( $path_length > $prefix_length && '/' === $path[ $prefix_length ] ) {
-					return true;
+					return $prefix;
 				}
 			}
 
 			// Keep exact root-prefix behavior when saved prefix ends with slash.
 			if ( '/' !== $prefix && 0 === strpos( $path, rtrim( $prefix, '/' ) . '/' ) ) {
-				return true;
+				return $prefix;
 			}
 		}
 
-		return false;
+		return '';
 	}
 
 	/**

@@ -41,6 +41,16 @@ final class PIB_Backorders_Source {
 			return self::normalize_records( $preloaded, $identity, $filters );
 		}
 
+		$cache_ttl = self::cache_ttl( $identity, $filters, $settings );
+		$cache_key = '';
+		if ( $cache_ttl > 0 ) {
+			$cache_key = self::cache_key( $identity, $filters, $settings );
+			$cached    = get_transient( $cache_key );
+			if ( is_array( $cached ) ) {
+				return $cached;
+			}
+		}
+
 		$endpoint = trim( (string) $settings['backorders_api_endpoint'] );
 		if ( '' === $endpoint ) {
 			return new WP_Error( 'pib_backorders_endpoint_missing', 'Backorders API endpoint is not configured.' );
@@ -98,8 +108,62 @@ final class PIB_Backorders_Source {
 		}
 
 		$records = self::extract_record_array( $data );
+		$records = self::normalize_records( $records, $identity, $filters );
 
-		return self::normalize_records( $records, $identity, $filters );
+		if ( $cache_ttl > 0 && '' !== $cache_key ) {
+			set_transient( $cache_key, $records, $cache_ttl );
+		}
+
+		return $records;
+	}
+
+	/**
+	 * Resolve cache TTL for backorders API responses.
+	 *
+	 * @param array<string, mixed> $identity Identity context.
+	 * @param array<string, mixed> $filters  Request filters.
+	 * @param array<string, mixed> $settings Plugin settings.
+	 *
+	 * @return int
+	 */
+	private static function cache_ttl( $identity, $filters, $settings ) {
+		$ttl = 60;
+		if ( isset( $settings['backorders_cache_ttl'] ) ) {
+			$ttl = absint( $settings['backorders_cache_ttl'] );
+		}
+
+		/**
+		 * Filter backorders response cache TTL in seconds.
+		 *
+		 * @param int                  $ttl      Cache TTL.
+		 * @param array<string, mixed> $identity Identity context.
+		 * @param array<string, mixed> $filters  Request filters.
+		 * @param array<string, mixed> $settings Plugin settings.
+		 */
+		$ttl = apply_filters( 'pib_backorders_cache_ttl', $ttl, $identity, $filters, $settings );
+		return max( 0, absint( $ttl ) );
+	}
+
+	/**
+	 * Build transient key for scoped backorders response caching.
+	 *
+	 * @param array<string, mixed> $identity Identity context.
+	 * @param array<string, mixed> $filters  Request filters.
+	 * @param array<string, mixed> $settings Plugin settings.
+	 *
+	 * @return string
+	 */
+	private static function cache_key( $identity, $filters, $settings ) {
+		$payload = array(
+			'endpoint' => isset( $settings['backorders_api_endpoint'] ) ? (string) $settings['backorders_api_endpoint'] : '',
+			'token'    => md5( isset( $settings['backorders_api_token'] ) ? (string) $settings['backorders_api_token'] : '' ),
+			'customer' => isset( $identity['shopify_customer_id'] ) ? (string) $identity['shopify_customer_id'] : '',
+			'company'  => isset( $identity['company_id'] ) ? (string) $identity['company_id'] : '',
+			'status'   => isset( $filters['status'] ) ? (string) $filters['status'] : '',
+			'limit'    => isset( $filters['limit'] ) ? absint( $filters['limit'] ) : 0,
+		);
+
+		return 'pib_backorders_' . md5( (string) wp_json_encode( $payload ) );
 	}
 
 	/**
@@ -260,4 +324,3 @@ final class PIB_Backorders_Source {
 		return true;
 	}
 }
-

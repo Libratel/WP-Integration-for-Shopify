@@ -14,6 +14,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 final class PIB_Audit_Log {
 	/**
+	 * Cron hook used for retention cleanup.
+	 */
+	const TRIM_CRON_HOOK = 'pib_audit_log_trim_cron';
+
+	/**
 	 * Singleton.
 	 *
 	 * @var PIB_Audit_Log|null
@@ -64,6 +69,7 @@ final class PIB_Audit_Log {
 	private function __construct( PIB_Plugin $plugin ) {
 		$this->plugin = $plugin;
 
+		add_action( self::TRIM_CRON_HOOK, array( $this, 'run_scheduled_trim' ) );
 		add_action( 'pib_auth_intake_success', array( $this, 'log_auth_success' ), 10, 3 );
 		add_action( 'pib_auth_intake_failure', array( $this, 'log_auth_failure' ), 10, 4 );
 		add_action( 'pib_backorders_view', array( $this, 'log_backorders_view' ), 10, 4 );
@@ -71,8 +77,13 @@ final class PIB_Audit_Log {
 		add_action( 'pib_backorders_error', array( $this, 'log_backorders_error' ), 10, 4 );
 		add_action( 'pib_material_download', array( $this, 'log_material_download' ), 10, 3 );
 		add_action( 'pib_mapping_upsert', array( $this, 'log_mapping_upsert' ), 10, 2 );
+		add_action( 'pib_mapping_resolution_denied', array( $this, 'log_mapping_resolution_denied' ), 10, 2 );
+		add_action( 'pib_logout_requested', array( $this, 'log_logout_requested' ), 10, 2 );
+		add_action( 'pib_logout_completed', array( $this, 'log_logout_completed' ), 10, 3 );
 		add_action( 'pib_protected_access_denied', array( $this, 'log_protected_access_denied' ), 10, 3 );
 		add_action( 'pib_session_expired', array( $this, 'log_session_expired' ), 10, 3 );
+
+		self::ensure_trim_schedule();
 	}
 
 	/**
@@ -138,6 +149,44 @@ final class PIB_Audit_Log {
 			)
 		);
 
+	}
+
+	/**
+	 * Ensure scheduled retention cleanup exists.
+	 *
+	 * @return void
+	 */
+	public static function ensure_trim_schedule() {
+		if ( wp_next_scheduled( self::TRIM_CRON_HOOK ) ) {
+			return;
+		}
+
+		wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', self::TRIM_CRON_HOOK );
+	}
+
+	/**
+	 * Remove scheduled retention cleanup tasks.
+	 *
+	 * @return void
+	 */
+	public static function clear_trim_schedule() {
+		$timestamp = wp_next_scheduled( self::TRIM_CRON_HOOK );
+		while ( false !== $timestamp ) {
+			$result = wp_unschedule_event( $timestamp, self::TRIM_CRON_HOOK );
+			if ( false === $result ) {
+				break;
+			}
+			$timestamp = wp_next_scheduled( self::TRIM_CRON_HOOK );
+		}
+	}
+
+	/**
+	 * Run retention cleanup from cron.
+	 *
+	 * @return void
+	 */
+	public function run_scheduled_trim() {
+		$settings = $this->plugin->get_settings();
 		$this->trim_logs_if_needed( (int) $settings['audit_log_retention_days'] );
 	}
 
@@ -195,22 +244,66 @@ final class PIB_Audit_Log {
 		$query = $wpdb->prepare( $sql, $params );
 		$rows  = $wpdb->get_results( $query, ARRAY_A );
 
-		if ( ! is_array( $rows ) ) {
-			return array();
+		return $this->decode_log_rows( $rows );
+	}
+
+	/**
+	 * Retrieve mapping failure/unmatched records for admin tooling.
+	 *
+	 * @param array<string, mixed> $args Query args.
+	 *
+	 * @return array<int, array<string, mixed>>
+	 */
+	public function get_mapping_failures( $args = array() ) {
+		global $wpdb;
+
+		$args = wp_parse_args(
+			is_array( $args ) ? $args : array(),
+			array(
+				'search' => '',
+				'reason' => '',
+				'source' => '',
+				'limit'  => 50,
+				'offset' => 0,
+			)
+		);
+
+		$limit  = max( 1, min( 500, absint( $args['limit'] ) ) );
+		$offset = max( 0, absint( $args['offset'] ) );
+		$search = sanitize_text_field( (string) $args['search'] );
+		$reason = sanitize_key( (string) $args['reason'] );
+		$source = sanitize_key( (string) $args['source'] );
+
+		$allowed_sources = array( 'mapping_resolution_denied', 'auth_failure' );
+		$where           = "event_type IN ('mapping_resolution_denied','auth_failure')";
+		$params          = array();
+
+		if ( in_array( $source, $allowed_sources, true ) ) {
+			$where   .= ' AND event_type = %s';
+			$params[] = $source;
+		}
+		if ( '' !== $reason ) {
+			$where   .= ' AND (context LIKE %s OR context LIKE %s)';
+			$params[] = '%"reason":"' . $wpdb->esc_like( $reason ) . '"%';
+			$params[] = '%"error_code":"' . $wpdb->esc_like( $reason ) . '"%';
+		}
+		if ( '' !== $search ) {
+			$where   .= ' AND (message LIKE %s OR context LIKE %s OR shopify_customer_id LIKE %s OR company_id LIKE %s)';
+			$like     = '%' . $wpdb->esc_like( $search ) . '%';
+			$params[] = $like;
+			$params[] = $like;
+			$params[] = $like;
+			$params[] = $like;
 		}
 
-		foreach ( $rows as &$row ) {
-			$row['context_decoded'] = array();
-			if ( isset( $row['context'] ) && is_string( $row['context'] ) && '' !== $row['context'] ) {
-				$decoded = json_decode( $row['context'], true );
-				if ( is_array( $decoded ) ) {
-					$row['context_decoded'] = $decoded;
-				}
-			}
-		}
-		unset( $row );
+		$sql = "SELECT * FROM " . self::table_name() . " WHERE {$where} ORDER BY id DESC LIMIT %d OFFSET %d";
+		$params[] = $limit;
+		$params[] = $offset;
 
-		return $rows;
+		$query = $wpdb->prepare( $sql, $params );
+		$rows  = $wpdb->get_results( $query, ARRAY_A );
+
+		return $this->decode_log_rows( $rows );
 	}
 
 	/**
@@ -246,6 +339,58 @@ final class PIB_Audit_Log {
 		if ( '' !== $event ) {
 			$where   .= ' AND event_type = %s';
 			$params[] = $event;
+		}
+		if ( '' !== $search ) {
+			$where   .= ' AND (message LIKE %s OR context LIKE %s OR shopify_customer_id LIKE %s OR company_id LIKE %s)';
+			$like     = '%' . $wpdb->esc_like( $search ) . '%';
+			$params[] = $like;
+			$params[] = $like;
+			$params[] = $like;
+			$params[] = $like;
+		}
+
+		$sql   = "SELECT COUNT(*) FROM " . self::table_name() . " WHERE {$where}";
+		$query = $wpdb->prepare( $sql, $params );
+		$count = $wpdb->get_var( $query );
+
+		return absint( $count );
+	}
+
+	/**
+	 * Count mapping failure/unmatched records.
+	 *
+	 * @param array<string, mixed> $args Query args.
+	 *
+	 * @return int
+	 */
+	public function count_mapping_failures( $args = array() ) {
+		global $wpdb;
+
+		$args = wp_parse_args(
+			is_array( $args ) ? $args : array(),
+			array(
+				'search' => '',
+				'reason' => '',
+				'source' => '',
+			)
+		);
+
+		$search = sanitize_text_field( (string) $args['search'] );
+		$reason = sanitize_key( (string) $args['reason'] );
+		$source = sanitize_key( (string) $args['source'] );
+
+		$allowed_sources = array( 'mapping_resolution_denied', 'auth_failure' );
+		$where           = "event_type IN ('mapping_resolution_denied','auth_failure')";
+		$params          = array();
+
+		if ( in_array( $source, $allowed_sources, true ) ) {
+			$where   .= ' AND event_type = %s';
+			$params[] = $source;
+		}
+		if ( '' !== $reason ) {
+			$where   .= ' AND (context LIKE %s OR context LIKE %s)';
+			$params[] = '%"reason":"' . $wpdb->esc_like( $reason ) . '"%';
+			$params[] = '%"error_code":"' . $wpdb->esc_like( $reason ) . '"%';
 		}
 		if ( '' !== $search ) {
 			$where   .= ' AND (message LIKE %s OR context LIKE %s OR shopify_customer_id LIKE %s OR company_id LIKE %s)';
@@ -321,6 +466,32 @@ final class PIB_Audit_Log {
 	}
 
 	/**
+	 * Decode log rows and append `context_decoded`.
+	 *
+	 * @param mixed $rows Query result rows.
+	 *
+	 * @return array<int, array<string, mixed>>
+	 */
+	private function decode_log_rows( $rows ) {
+		if ( ! is_array( $rows ) ) {
+			return array();
+		}
+
+		foreach ( $rows as &$row ) {
+			$row['context_decoded'] = array();
+			if ( isset( $row['context'] ) && is_string( $row['context'] ) && '' !== $row['context'] ) {
+				$decoded = json_decode( $row['context'], true );
+				if ( is_array( $decoded ) ) {
+					$row['context_decoded'] = $decoded;
+				}
+			}
+		}
+		unset( $row );
+
+		return $rows;
+	}
+
+	/**
 	 * Hook: auth intake success.
 	 *
 	 * @param array<string, mixed> $claims Verified claims.
@@ -391,6 +562,72 @@ final class PIB_Audit_Log {
 				'shopify_customer_id' => isset( $mapping['shopify_customer_id'] ) ? (string) $mapping['shopify_customer_id'] : '',
 				'company_id'          => isset( $mapping['company_id'] ) ? (string) $mapping['company_id'] : '',
 			)
+		);
+	}
+
+	/**
+	 * Hook: mapping resolution denied.
+	 *
+	 * @param string               $reason  Denial reason.
+	 * @param array<string, mixed> $context Extra context.
+	 *
+	 * @return void
+	 */
+	public function log_mapping_resolution_denied( $reason, $context ) {
+		$payload = is_array( $context ) ? $context : array();
+		$payload['reason'] = sanitize_key( (string) $reason );
+
+		$this->log(
+			'mapping_resolution_denied',
+			'warning',
+			'Customer mapping resolution denied.',
+			$payload
+		);
+	}
+
+	/**
+	 * Hook: explicit logout requested.
+	 *
+	 * @param int                  $user_id User ID.
+	 * @param array<string, mixed> $context Logout context.
+	 *
+	 * @return void
+	 */
+	public function log_logout_requested( $user_id, $context ) {
+		$payload = is_array( $context ) ? $context : array();
+		$payload['user_id'] = absint( $user_id );
+
+		$this->log(
+			'logout_requested',
+			'info',
+			'Portal logout requested.',
+			$payload
+		);
+	}
+
+	/**
+	 * Hook: explicit logout completed.
+	 *
+	 * @param int                  $user_id User ID.
+	 * @param string               $mode    Logout mode (local/coordinated).
+	 * @param array<string, mixed> $context Logout context.
+	 *
+	 * @return void
+	 */
+	public function log_logout_completed( $user_id, $mode, $context ) {
+		$payload = is_array( $context ) ? $context : array();
+		$payload['user_id'] = absint( $user_id );
+		$mode               = sanitize_key( (string) $mode );
+		if ( '' === $mode ) {
+			$mode = 'local';
+		}
+		$payload['mode'] = $mode;
+
+		$this->log(
+			'logout_completed',
+			'info',
+			'Portal logout completed.',
+			$payload
 		);
 	}
 

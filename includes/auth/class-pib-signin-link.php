@@ -98,7 +98,7 @@ final class PIB_Signin_Link {
 	}
 
 	/**
-	 * Build Shopify login URL with destination and intake callback.
+	 * Build Shopify app route URL with return URL and destination.
 	 *
 	 * @param string $destination Optional destination override.
 	 *
@@ -106,9 +106,9 @@ final class PIB_Signin_Link {
 	 */
 	public function build_signin_url( $destination = '' ) {
 		$settings          = $this->plugin->get_settings();
-		$shopify_login_url = trim( (string) $settings['shopify_login_url'] );
+		$shopify_app_url = trim( (string) $settings['shopify_login_url'] );
 
-		if ( '' === $shopify_login_url ) {
+		if ( '' === $shopify_app_url ) {
 			return '';
 		}
 
@@ -120,10 +120,19 @@ final class PIB_Signin_Link {
 		}
 
 		$query_args = array(
-			'dest'   => $destination,
-			'intake' => PIB_Plugin::intake_url(),
-			'source' => 'partner_portal',
+			'return_url' => PIB_Plugin::intake_url(),
+			'intake'     => PIB_Plugin::intake_url(),
+			'dest'       => $destination,
+			'source'     => 'partner_portal',
 		);
+
+		$client_id = isset( $settings['client_id'] ) ? trim( (string) $settings['client_id'] ) : '';
+		if ( '' === $client_id && isset( $settings['expected_audience'] ) ) {
+			$client_id = trim( (string) $settings['expected_audience'] );
+		}
+		if ( '' !== $client_id ) {
+			$query_args['client_id'] = $client_id;
+		}
 
 		/**
 		 * Filter the outbound Shopify auth query params.
@@ -133,7 +142,6 @@ final class PIB_Signin_Link {
 		 */
 		$query_args = apply_filters( 'pib_shopify_login_query_args', $query_args, $destination );
 
-		return add_query_arg( $query_args, $shopify_login_url );
+		return add_query_arg( $query_args, $shopify_app_url );
 	}
 }
-
