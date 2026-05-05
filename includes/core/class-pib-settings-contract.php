@@ -236,7 +236,7 @@ final class PIB_Settings_Contract {
 			),
 			'new_user_role' => array(
 				'type'        => 'role',
-				'default'     => 'subscriber',
+				'default'     => 'shopify_customer',
 				'section'     => 'user_mapping',
 				'label'       => 'New User Role',
 				'ui'          => true,
@@ -941,7 +941,7 @@ final class PIB_Settings_Contract {
 				$roles_obj = wp_roles();
 				$roles     = $roles_obj instanceof WP_Roles ? $roles_obj->get_names() : array();
 				if ( ! isset( $roles[ $role ] ) ) {
-					$role = 'subscriber';
+					$role = isset( $roles['shopify_customer'] ) ? 'shopify_customer' : 'subscriber';
 				}
 				return $role;
 

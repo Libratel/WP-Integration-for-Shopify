@@ -19,6 +19,16 @@ final class PIB_Installer {
 	const DB_VERSION = '1.1.0';
 
 	/**
+	 * Role slug for Shopify customer identities.
+	 */
+	const ROLE_SHOPIFY_CUSTOMER = 'shopify_customer';
+
+	/**
+	 * Role slug for internal staff users.
+	 */
+	const ROLE_INTERNAL_EMPLOYEE = 'internal_employee';
+
+	/**
 	 * Run activation tasks.
 	 *
 	 * @return void
@@ -27,6 +37,8 @@ final class PIB_Installer {
 		self::create_mapping_table();
 		self::create_audit_log_table();
 		self::initialize_settings();
+		self::ensure_roles();
+		self::maybe_migrate_default_customer_role();
 		self::ensure_audit_log_schedule();
 		update_option( 'pib_db_version', self::DB_VERSION );
 	}
@@ -54,6 +66,8 @@ final class PIB_Installer {
 			update_option( 'pib_db_version', self::DB_VERSION );
 		}
 
+		self::ensure_roles();
+		self::maybe_migrate_default_customer_role();
 		self::ensure_audit_log_schedule();
 	}
 
@@ -133,6 +147,62 @@ final class PIB_Installer {
 		if ( null === $existing ) {
 			add_option( PIB_Plugin::OPTION_KEY, PIB_Plugin::default_settings() );
 		}
+	}
+
+	/**
+	 * Ensure custom portal roles exist.
+	 *
+	 * @return void
+	 */
+	private static function ensure_roles() {
+		$customer_caps = array(
+			'read' => true,
+		);
+
+		add_role(
+			self::ROLE_SHOPIFY_CUSTOMER,
+			'Shopify Customer',
+			$customer_caps
+		);
+
+		add_role(
+			self::ROLE_INTERNAL_EMPLOYEE,
+			'Internal Employee',
+			$customer_caps
+		);
+
+		$customer_role = get_role( self::ROLE_SHOPIFY_CUSTOMER );
+		if ( $customer_role instanceof WP_Role ) {
+			$customer_role->add_cap( 'read' );
+		}
+
+		$employee_role = get_role( self::ROLE_INTERNAL_EMPLOYEE );
+		if ( $employee_role instanceof WP_Role ) {
+			$employee_role->add_cap( 'read' );
+		}
+	}
+
+	/**
+	 * Migrate legacy auto-created user default role to `shopify_customer`.
+	 *
+	 * @return void
+	 */
+	private static function maybe_migrate_default_customer_role() {
+		$flag_key = 'pib_role_default_migrated_v1';
+		if ( get_option( $flag_key ) ) {
+			return;
+		}
+
+		$settings = get_option( PIB_Plugin::OPTION_KEY, null );
+		if ( is_array( $settings ) ) {
+			$current_role = isset( $settings['new_user_role'] ) ? sanitize_key( (string) $settings['new_user_role'] ) : '';
+			if ( '' === $current_role || 'subscriber' === $current_role ) {
+				$settings['new_user_role'] = self::ROLE_SHOPIFY_CUSTOMER;
+				update_option( PIB_Plugin::OPTION_KEY, $settings );
+			}
+		}
+
+		add_option( $flag_key, 1, '', false );
 	}
 
 	/**

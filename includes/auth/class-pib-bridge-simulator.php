@@ -211,7 +211,7 @@ final class PIB_Bridge_Simulator {
 	}
 
 	/**
-	 * Redirect back to settings page with a bridge notice code.
+	 * Redirect back to Tools > Advanced Bridge Simulator with a notice code.
 	 *
 	 * @param string $code Notice code.
 	 * @return void
@@ -219,11 +219,13 @@ final class PIB_Bridge_Simulator {
 	private function fail_with_code( $code ) {
 		$redirect = add_query_arg(
 			array(
-				'page'                => 'pib-settings',
+				'page'                => 'pib-tools',
+				'tab'                 => 'advanced',
+				'panel'               => 'bridge_simulator',
 				'pib_bridge_notice'   => sanitize_key( (string) $code ),
 				'pib_bridge_notice_type' => 'error',
 			),
-			admin_url( 'options-general.php' )
+			admin_url( 'admin.php' )
 		);
 
 		wp_safe_redirect( $redirect );

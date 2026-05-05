@@ -110,6 +110,33 @@ final class PIB_Customer_Mapping {
 	}
 
 	/**
+	 * Normalize customer email from claims payload.
+	 *
+	 * Accepts `email` and common bridge aliases.
+	 *
+	 * @param array<string, mixed> $claims Claims payload.
+	 *
+	 * @return string
+	 */
+	public static function email_from_claims( $claims ) {
+		$claims = is_array( $claims ) ? $claims : array();
+		$keys   = array( 'email', 'customer_email', 'shopify_email' );
+
+		foreach ( $keys as $key ) {
+			if ( ! isset( $claims[ $key ] ) ) {
+				continue;
+			}
+
+			$email = sanitize_email( (string) $claims[ $key ] );
+			if ( '' !== $email && is_email( $email ) ) {
+				return $email;
+			}
+		}
+
+		return '';
+	}
+
+	/**
 	 * Resolve/auto-link WP user from stable customer claims.
 	 *
 	 * @param WP_User|false         $resolved_user Existing resolved user from prior logic.
@@ -121,7 +148,7 @@ final class PIB_Customer_Mapping {
 		$settings            = $this->plugin->get_settings();
 		$shopify_customer_id = self::customer_id_from_claims( $claims );
 		$company_id          = self::company_id_from_claims( $claims );
-		$email               = isset( $claims['email'] ) ? sanitize_email( (string) $claims['email'] ) : '';
+		$email               = self::email_from_claims( $claims );
 		$resolution_action   = 'upsert';
 
 		if ( '' === $shopify_customer_id ) {
@@ -148,6 +175,10 @@ final class PIB_Customer_Mapping {
 			if ( $mapped_user_id > 0 ) {
 				$user = get_user_by( 'id', $mapped_user_id );
 				if ( $user instanceof WP_User ) {
+					if ( ! $this->sync_user_email_to_claims( $user, $email, $shopify_customer_id, $company_id ) ) {
+						return false;
+					}
+
 					$this->touch_mapping( (int) $mapping['id'], $email );
 					$this->set_active_mapping_for_user( $user->ID, (int) $mapping['id'] );
 					do_action( 'pib_mapping_upsert', $mapping, 'touch' );
@@ -176,7 +207,10 @@ final class PIB_Customer_Mapping {
 			$resolution_action = 'resolved_hint';
 		}
 
-		$auto_link_by_email = ! empty( $settings['auto_link_existing_users_by_email'] );
+		// Bridge identity flow is email-driven: always attempt link/create from verified claims.
+		$auto_link_by_email = true;
+		$auto_create        = true;
+
 		if ( ! $user && $auto_link_by_email && '' !== $email ) {
 			$email_link_user = $this->resolve_guarded_email_link_user( $email, $shopify_customer_id );
 			if ( is_wp_error( $email_link_user ) ) {
@@ -196,7 +230,17 @@ final class PIB_Customer_Mapping {
 			}
 		}
 
-		$auto_create = ! empty( $settings['auto_create_users'] );
+		if ( ! $user && '' === $email && ( $auto_link_by_email || $auto_create ) ) {
+			$this->emit_mapping_resolution_denied(
+				'missing_email_claim',
+				array(
+					'shopify_customer_id' => $shopify_customer_id,
+					'company_id'          => $company_id,
+				)
+			);
+			return false;
+		}
+
 		if ( ! $user && $auto_create ) {
 			$user = $this->create_wordpress_user_from_claims( $claims, (string) $settings['new_user_role'] );
 			if ( $user instanceof WP_User ) {
@@ -217,6 +261,10 @@ final class PIB_Customer_Mapping {
 					'company_id'          => $company_id,
 				)
 			);
+			return false;
+		}
+
+		if ( ! $this->sync_user_email_to_claims( $user, $email, $shopify_customer_id, $company_id ) ) {
 			return false;
 		}
 
@@ -833,6 +881,81 @@ final class PIB_Customer_Mapping {
 	}
 
 	/**
+	 * Sync WordPress user email to verified Shopify claim when needed.
+	 *
+	 * @param WP_User $user                Target user.
+	 * @param string  $email               Verified email claim.
+	 * @param string  $shopify_customer_id Shopify customer ID.
+	 * @param string  $company_id          Shopify company/account ID.
+	 *
+	 * @return bool
+	 */
+	private function sync_user_email_to_claims( WP_User $user, $email, $shopify_customer_id, $company_id ) {
+		$email = sanitize_email( (string) $email );
+		if ( '' === $email || ! is_email( $email ) ) {
+			return true;
+		}
+
+		$current_email = sanitize_email( (string) $user->user_email );
+		if ( '' !== $current_email && 0 === strcasecmp( $current_email, $email ) ) {
+			return true;
+		}
+
+		$existing_user = get_user_by( 'email', $email );
+		if ( $existing_user instanceof WP_User && $existing_user->ID !== $user->ID ) {
+			$this->emit_mapping_resolution_denied(
+				'email_sync_conflict',
+				array(
+					'user_id'             => $user->ID,
+					'conflict_user_id'    => $existing_user->ID,
+					'shopify_customer_id' => $shopify_customer_id,
+					'company_id'          => $company_id,
+					'email'               => $email,
+				)
+			);
+			return false;
+		}
+
+		$updated = wp_update_user(
+			array(
+				'ID'         => $user->ID,
+				'user_email' => $email,
+			)
+		);
+
+		if ( is_wp_error( $updated ) ) {
+			$this->emit_mapping_resolution_denied(
+				'email_sync_failed',
+				array(
+					'user_id'             => $user->ID,
+					'shopify_customer_id' => $shopify_customer_id,
+					'company_id'          => $company_id,
+					'email'               => $email,
+				)
+			);
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Get preferred role for auto-created Shopify identities.
+	 *
+	 * @return string
+	 */
+	private function default_customer_role() {
+		$roles_obj = wp_roles();
+		$roles     = $roles_obj instanceof WP_Roles ? $roles_obj->get_names() : array();
+
+		if ( isset( $roles['shopify_customer'] ) ) {
+			return 'shopify_customer';
+		}
+
+		return 'subscriber';
+	}
+
+	/**
 	 * Create a WordPress user from claim payload.
 	 *
 	 * @param array<string, mixed> $claims Claims payload.
@@ -841,7 +964,7 @@ final class PIB_Customer_Mapping {
 	 * @return WP_User|false
 	 */
 	private function create_wordpress_user_from_claims( $claims, $role ) {
-		$email = isset( $claims['email'] ) ? sanitize_email( (string) $claims['email'] ) : '';
+		$email = self::email_from_claims( $claims );
 		if ( '' === $email || ! is_email( $email ) ) {
 			return false;
 		}
@@ -852,7 +975,7 @@ final class PIB_Customer_Mapping {
 		}
 
 		$base_username = '';
-		if ( isset( $claims['email'] ) ) {
+		if ( '' !== $email ) {
 			$email_parts   = explode( '@', $email );
 			$base_username = sanitize_user( (string) $email_parts[0], true );
 		}
@@ -881,7 +1004,7 @@ final class PIB_Customer_Mapping {
 		$allowed_roles = $roles_obj instanceof WP_Roles ? $roles_obj->get_names() : array();
 		$role          = sanitize_key( (string) $role );
 		if ( ! isset( $allowed_roles[ $role ] ) ) {
-			$role = 'subscriber';
+			$role = $this->default_customer_role();
 		}
 
 		$user->set_role( $role );

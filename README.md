@@ -115,9 +115,11 @@ Extensibility hooks:
 - Protected access supports explicit unprotected prefixes (`Unprotected Route Prefixes`) to keep login/failure routes reachable.
 - Route validation now flags misconfigurations such as protected failure destinations and global unprotected `/`.
 - Admin tools include `Route Access` tab with:
-  - effective policy overview
-  - destination tester
-  - sample route matrix
+  - route access assistant summary with direct fix links
+  - effective policy inputs (prefixes, destination posture, session/mapping gate mode)
+  - risk checks (`Action Needed`, `Warning`, `OK`)
+  - destination tester with expected visitor behavior
+  - sample route matrix with behavior outcomes
 
 ## Extensibility (Prompt 5)
 
@@ -190,12 +192,14 @@ Optional/used in Phase 5:
 
 - `iat`, `nbf`
 - `wp_user_id` (optional explicit user hint)
-- `email` (used for optional auto-link/auto-create behavior)
+- `email` (recommended; used for auto-link/auto-create and ongoing WP email sync)
+- `customer_email` (alias accepted when `email` is not present)
 
 Mapping guardrails:
 
 - Email-based auto-link is blocked when target WP user is already actively mapped to a different Shopify customer.
 - Existing blocked/archived customer mappings are not automatically reactivated during auth intake.
+- If Shopify email claim changes, plugin attempts to sync mapped WordPress user email to keep customer identity aligned.
 
 ## Sign-In Shortcode
 
@@ -211,8 +215,10 @@ Optional:
 
 The shortcode sends users to Shopify issuer URL with:
 
+- `return_url` (WordPress intake callback URL)
 - `dest` (validated internal destination)
 - `intake` (WordPress intake callback URL)
+- `client_id` (expected token audience)
 - `source=partner_portal`
 
 Logout shortcode:
@@ -256,6 +262,11 @@ Unique key: `(shopify_customer_id, company_id)`
 - `New User Role`
 - `Require Active Mapping on Protected Routes`
 - `Require Managed Session on Protected Routes`
+
+Default role behavior for auto-created users:
+
+- `shopify_customer` (created on activation/upgrade if missing)
+- Additional role available for future workflows: `internal_employee`
 - `Enable SparkLayer Launch Entry`
 - `Spark Launch Allowed Prefixes`
 - `Managed Session TTL (hours)`
@@ -327,30 +338,95 @@ Logout/session strategy:
 ## Admin Tools
 
 - WordPress admin page:
-  - `Tools -> Portal Bridge Tools`
+  - `Portal Bridge -> Tools`
 - Tabs:
+  - `Overview` (operational entry cards for daily workflows)
   - `Mappings` (search/filter + activate/block/archive actions)
-  - `Mapping Failures` (unmatched/failed mapping + auth resolution records with prefill links)
-  - `Route Access` (route policy overview + destination tester + sample route matrix)
-  - `Extensions` (plugin module lifecycle + registered portal extension modules)
+  - `Failures` (unmatched/failed mapping + auth resolution records with guided actions)
   - `Health` (runtime checks + support snapshot preview/download)
   - `Audit Logs` (search/filter + clear action)
+  - `Advanced` (expert panels)
+- Advanced panels:
+  - `Route Access` (route policy overview + destination tester + sample route matrix)
+  - `Extensions` (plugin module lifecycle + registered portal extension modules)
+  - `Token Check`
+  - `Setup Assistant`
+  - `Bridge Contract`
+  - `Bridge Simulator`
+  - `Diagnostics`
 - Mapping operations:
   - Create/link/update mappings from admin form (customer/company -> WP user by ID/login/email)
   - Actionable prefill from failures tab into mapping create/link form
 
 ## Bridge Simulator (Prompt 1)
 
-- In `Settings -> Portal Bridge`, admins can launch a short-lived test handoff token via **Bridge Simulator (Prompt 1)**.
+- In `Portal Bridge -> Tools -> Advanced`, admins can launch a short-lived test handoff token via **Bridge Simulator (Prompt 1)**.
 - This simulates the Shopify bridge redirect into:
   - `wp-admin/admin-post.php?action=pib_auth_intake&token=...`
 - It is intended for validating WordPress intake/mapping/session flow before external Shopify route wiring is complete.
 
 ## Bridge Contract (Prompt 2)
 
-- `Settings -> Portal Bridge` now includes **Bridge Contract (Prompt 2)**.
+- `Portal Bridge -> Tools -> Advanced` includes **Bridge Contract (Prompt 2)**.
 - It shows:
   - canonical launch URL generated from configured settings
   - expected Shopify redirect output into WordPress intake
   - required JWT claims and expected values (`iss`, `aud`, `exp`, `jti`, `shopify_customer_id`, `company_id`, `dest`)
+  - implementation wiring map (what to configure in WordPress, Shopify App Proxy, and token-minting endpoint)
+  - copy/paste Cloudflare Worker token-minting script prefilled from current WP settings
+  - required worker environment variable matrix (`WP_JWT_SECRET`, `WP_ISSUER`, `WP_AUDIENCE`, `COMPANY_ID`)
+  - optional Shopify theme button snippet for manual launch testing
 - Outbound sign-in URL now includes: `return_url`, `intake`, `dest`, `client_id`, and `source=partner_portal`.
+
+## Setup Assistant (Prompt 3)
+
+- `Portal Bridge -> Tools -> Advanced` includes **Setup Assistant (Prompt 3)**.
+- It provides a click-by-click beginner sequence:
+  - confirm WordPress bridge values (`Portal URL`, `Client ID`, `Shared Secret`, `Issuer`, intake URL)
+  - configure Shopify App Proxy (`Prefix`, `Subpath`, customer-facing URL vs proxy target URL)
+  - configure token-minting endpoint env vars
+  - run verification links (`Shopify Bridge Test`, `Internal Token Test`, `Token Check`, `Mapping Failures`)
+- It is intended to remove ambiguity between:
+  - storefront/app-proxy URL (`/apps/<subpath>`)
+  - backend proxy target endpoint (worker/server URL)
+
+## Shopify Handoff Implementation (Platform-Agnostic)
+
+This plugin does not passively detect Shopify login state across domains.
+Shopify-side route/app logic must actively perform JWT handoff into WordPress intake.
+
+Expected implementation flow in Shopify app route:
+
+1. Receive launch parameters from WordPress:
+   - `return_url`
+   - `intake`
+   - `dest`
+   - `client_id`
+   - `source=partner_portal`
+2. Resolve authenticated Shopify customer context.
+3. Build a short-lived HS256 JWT using the same shared secret as WordPress `token_secret`.
+4. Include required claims:
+   - `iss` (must exactly equal WordPress Issuer setting)
+   - `aud` (must include `client_id`)
+   - `exp`, `iat`, `nbf`
+   - `jti` (unique per token)
+   - `shopify_customer_id` (or `customer_id`)
+   - `company_id` (when WordPress requires company claim)
+   - `dest` (must match allowed destination prefixes)
+   - `email` (recommended for first-time auto-link/auto-create and identity sync)
+5. Redirect browser to WordPress intake:
+   - `https://partners.example.com/wp-admin/admin-post.php?action=pib_auth_intake&token=<jwt>`
+
+Operational notes:
+
+- Issuer comparison is exact; normalize trailing slash behavior intentionally.
+- Audience must include configured Client ID.
+- Missing `company_id` fails intake when `Require Company ID Claim` is enabled.
+- Normal Shopify login without the JWT redirect does not create a WordPress session.
+
+### Bridge Smoke Test Checklist
+
+1. Run **Internal Token Test** in WordPress settings to verify intake/mapping/session path.
+2. Run **Test Shopify Bridge Route** from settings (or protected portal route) and confirm redirect returns to WordPress intake.
+3. Check `Portal Bridge -> Tools -> Failures` for `auth_failure`/`mapping_resolution_denied` reason codes.
+4. Check `Portal Bridge -> Tools -> Audit Logs` for recent `auth_success` or `auth_failure` events.

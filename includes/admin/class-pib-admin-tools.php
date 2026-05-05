@@ -53,7 +53,8 @@ final class PIB_Admin_Tools {
 	private function __construct( PIB_Plugin $plugin ) {
 		$this->plugin = $plugin;
 
-		add_action( 'admin_menu', array( $this, 'register_page' ) );
+		add_action( 'admin_init', array( $this, 'maybe_redirect_legacy_tools_page' ) );
+		add_action( 'admin_menu', array( $this, 'register_page' ), 20 );
 	}
 
 	/**
@@ -62,13 +63,53 @@ final class PIB_Admin_Tools {
 	 * @return void
 	 */
 	public function register_page() {
-		add_management_page(
+		add_submenu_page(
+			'pib-settings',
 			'Portal Bridge Tools',
-			'Portal Bridge Tools',
+			'Tools',
 			'manage_options',
 			'pib-tools',
 			array( $this, 'render_page' )
 		);
+	}
+
+	/**
+	 * Redirect legacy tools URL to the Portal Bridge top-level route.
+	 *
+	 * @return void
+	 */
+	public function maybe_redirect_legacy_tools_page() {
+		if ( ! is_admin() ) {
+			return;
+		}
+
+		global $pagenow;
+		if ( 'tools.php' !== $pagenow ) {
+			return;
+		}
+
+		$page = sanitize_key( $this->request_text( 'page' ) );
+		if ( 'pib-tools' !== $page ) {
+			return;
+		}
+
+		$args = array();
+		foreach ( $_GET as $key => $value ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			if ( ! is_scalar( $value ) ) {
+				continue;
+			}
+
+			$key = sanitize_key( (string) $key );
+			if ( '' === $key ) {
+				continue;
+			}
+
+			$args[ $key ] = sanitize_text_field( (string) wp_unslash( $value ) );
+		}
+		$args['page'] = 'pib-tools';
+
+		wp_safe_redirect( add_query_arg( $args, admin_url( 'admin.php' ) ) );
+		exit;
 	}
 
 	/**
@@ -85,39 +126,169 @@ final class PIB_Admin_Tools {
 
 		$tab = $this->request_text( 'tab' );
 		if ( '' === $tab ) {
-			$tab = 'mappings';
+			$tab = 'overview';
 		}
-		if ( ! in_array( $tab, array( 'mappings', 'failures', 'routes', 'extensions', 'health', 'logs' ), true ) ) {
-			$tab = 'mappings';
+		if ( ! in_array( $tab, array( 'overview', 'mappings', 'failures', 'health', 'logs', 'advanced' ), true ) ) {
+			$tab = 'overview';
 		}
 
 		echo '<div class="wrap">';
 		echo '<h1>Portal Bridge Tools</h1>';
-		echo '<p>Operational controls for customer mappings, route policy diagnostics, extension modules, unmatched/failed records, and audit events.</p>';
+		echo '<p>Operational controls for mappings, failures, health checks, audit logs, and advanced troubleshooting panels.</p>';
 		$this->render_notice_from_query();
 		echo '<h2 class="nav-tab-wrapper">';
+		echo '<a class="nav-tab ' . ( 'overview' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'overview' ) ) . '">Overview</a>';
 		echo '<a class="nav-tab ' . ( 'mappings' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'mappings' ) ) . '">Mappings</a>';
-		echo '<a class="nav-tab ' . ( 'failures' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'failures' ) ) . '">Mapping Failures</a>';
-		echo '<a class="nav-tab ' . ( 'routes' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'routes' ) ) . '">Route Access</a>';
-		echo '<a class="nav-tab ' . ( 'extensions' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'extensions' ) ) . '">Extensions</a>';
+		echo '<a class="nav-tab ' . ( 'failures' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'failures' ) ) . '">Failures</a>';
 		echo '<a class="nav-tab ' . ( 'health' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'health' ) ) . '">Health</a>';
 		echo '<a class="nav-tab ' . ( 'logs' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'logs' ) ) . '">Audit Logs</a>';
+		echo '<a class="nav-tab ' . ( 'advanced' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'advanced' ) ) . '">Advanced</a>';
 		echo '</h2>';
 
-		if ( 'logs' === $tab ) {
+		if ( 'advanced' === $tab ) {
+			$this->render_advanced_tab();
+		} elseif ( 'logs' === $tab ) {
 			$this->render_logs_tab();
 		} elseif ( 'health' === $tab ) {
 			$this->render_health_tab();
-		} elseif ( 'extensions' === $tab ) {
-			$this->render_extensions_tab();
-		} elseif ( 'routes' === $tab ) {
-			$this->render_routes_tab();
 		} elseif ( 'failures' === $tab ) {
 			$this->render_failures_tab();
-		} else {
+		} elseif ( 'mappings' === $tab ) {
 			$this->render_mappings_tab();
+		} else {
+			$this->render_overview_tab();
 		}
 
+		echo '</div>';
+	}
+
+	/**
+	 * Render operational overview tab with direct entry points.
+	 *
+	 * @return void
+	 */
+	private function render_overview_tab() {
+		$cards = array(
+			array(
+				'title'       => 'Mappings',
+				'description' => 'Create, search, and update customer-to-user mappings.',
+				'url'         => $this->tab_url( 'mappings' ),
+				'action'      => 'Open Mappings',
+			),
+			array(
+				'title'       => 'Failures',
+				'description' => 'Review auth and mapping-denial records with guided actions.',
+				'url'         => $this->tab_url( 'failures' ),
+				'action'      => 'Open Failures',
+			),
+			array(
+				'title'       => 'Health',
+				'description' => 'Check runtime health and download support snapshots.',
+				'url'         => $this->tab_url( 'health' ),
+				'action'      => 'Open Health',
+			),
+			array(
+				'title'       => 'Audit Logs',
+				'description' => 'Filter and inspect recent plugin activity and events.',
+				'url'         => $this->tab_url( 'logs' ),
+				'action'      => 'Open Audit Logs',
+			),
+			array(
+				'title'       => 'Route Access (Advanced)',
+				'description' => 'Diagnose destination protection and redirect-loop risk.',
+				'url'         => $this->advanced_panel_url( 'routes' ),
+				'action'      => 'Open Route Access',
+			),
+			array(
+				'title'       => 'Extensions (Advanced)',
+				'description' => 'Inspect module registry and portal extension visibility.',
+				'url'         => $this->advanced_panel_url( 'extensions' ),
+				'action'      => 'Open Extensions',
+			),
+			array(
+				'title'       => 'Token Check (Advanced)',
+				'description' => 'Jump to advanced troubleshooting tools in the new panel workspace.',
+				'url'         => $this->advanced_panel_url( 'token' ),
+				'action'      => 'Open Advanced',
+			),
+		);
+
+		echo '<h2 style="margin-top:18px;">Operations Overview</h2>';
+		echo '<p>Choose a workspace below to continue with day-to-day operations or advanced troubleshooting.</p>';
+		echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;max-width:1180px;">';
+		foreach ( $cards as $card ) {
+			if ( ! is_array( $card ) ) {
+				continue;
+			}
+			$title       = isset( $card['title'] ) ? sanitize_text_field( (string) $card['title'] ) : '';
+			$description = isset( $card['description'] ) ? sanitize_text_field( (string) $card['description'] ) : '';
+			$url         = isset( $card['url'] ) ? esc_url_raw( (string) $card['url'] ) : '';
+			$action      = isset( $card['action'] ) ? sanitize_text_field( (string) $card['action'] ) : 'Open';
+			if ( '' === $title || '' === $url ) {
+				continue;
+			}
+
+			echo '<section style="background:#fff;border:1px solid #dcdcde;border-radius:8px;padding:14px;">';
+			echo '<h3 style="margin:0 0 8px 0;">' . esc_html( $title ) . '</h3>';
+			if ( '' !== $description ) {
+				echo '<p style="margin:0 0 12px 0;color:#50575e;">' . esc_html( $description ) . '</p>';
+			}
+			echo '<a class="button" href="' . esc_url( $url ) . '">' . esc_html( $action ) . '</a>';
+			echo '</section>';
+		}
+		echo '</div>';
+	}
+
+	/**
+	 * Render advanced operations workspace with panel-level routing.
+	 *
+	 * @return void
+	 */
+	private function render_advanced_tab() {
+		$panels = array(
+			'routes'           => 'Route Access',
+			'extensions'       => 'Extensions',
+			'token'            => 'Token Check',
+			'setup_assistant'  => 'Setup Assistant',
+			'bridge_contract'  => 'Bridge Contract',
+			'bridge_simulator' => 'Bridge Simulator',
+			'diagnostics'      => 'Diagnostics',
+		);
+
+		$panel = sanitize_key( $this->request_text( 'panel' ) );
+		if ( '' === $panel || ! isset( $panels[ $panel ] ) ) {
+			$panel = 'routes';
+		}
+
+		echo '<h2 style="margin-top:18px;">Advanced Workspace</h2>';
+		echo '<p>Expert tools are grouped here while setup remains focused on configuration.</p>';
+		echo '<h3 class="nav-tab-wrapper" style="margin-top:14px;">';
+		foreach ( $panels as $panel_key => $panel_label ) {
+			$is_active = $panel_key === $panel ? ' nav-tab-active' : '';
+			echo '<a class="nav-tab' . esc_attr( $is_active ) . '" href="' . esc_url( $this->advanced_panel_url( $panel_key ) ) . '">' . esc_html( $panel_label ) . '</a>';
+		}
+		echo '</h3>';
+
+		if ( 'routes' === $panel ) {
+			$this->render_routes_tab();
+			return;
+		}
+
+		if ( 'extensions' === $panel ) {
+			$this->render_extensions_tab();
+			return;
+		}
+
+		$settings_page = class_exists( 'PIB_Settings' ) ? PIB_Settings::instance( $this->plugin ) : null;
+		if ( $settings_page instanceof PIB_Settings && method_exists( $settings_page, 'render_advanced_tools_panel' ) ) {
+			$rendered = $settings_page->render_advanced_tools_panel( $panel, $this->advanced_panel_url( $panel ) );
+			if ( $rendered ) {
+				return;
+			}
+		}
+
+		echo '<div class="notice notice-error" style="margin:16px 0 12px 0;">';
+		echo '<p><strong>Advanced panel unavailable:</strong> the selected panel could not be rendered.</p>';
 		echo '</div>';
 	}
 
@@ -243,6 +414,11 @@ final class PIB_Admin_Tools {
 			return;
 		}
 
+		$token_check_url    = $this->advanced_panel_url( 'token' );
+		$bridge_setup_url   = $this->settings_page_url();
+		$contract_tool_url  = $this->advanced_panel_url( 'bridge_contract' );
+		echo '<div class="notice notice-info" style="margin:12px 0 14px 0;"><p><strong>Bridge troubleshooting note:</strong> this table tracks JWT handoff and mapping denials. A normal Shopify customer login without JWT redirect to intake commonly appears as <code>pib_missing_token</code>.</p><p><a href="' . esc_url( $token_check_url ) . '">Open Token Check</a> | <a href="' . esc_url( $contract_tool_url ) . '">Open Bridge Contract</a> | <a href="' . esc_url( $bridge_setup_url ) . '">Open Bridge Setup</a></p></div>';
+
 		$search = $this->request_text( 'q' );
 		$source = $this->request_text( 'source' );
 		$reason = $this->request_text( 'reason' );
@@ -302,6 +478,7 @@ final class PIB_Admin_Tools {
 				$company  = isset( $row['company_id'] ) ? (string) $row['company_id'] : '';
 				$email    = isset( $context['email'] ) ? sanitize_email( (string) $context['email'] ) : '';
 				$user_id  = isset( $context['user_id'] ) ? absint( $context['user_id'] ) : absint( $row['user_id'] );
+				$guidance = $this->failure_reason_guidance( $source_id, $reason_id );
 
 				$action = '';
 				if ( '' !== $customer ) {
@@ -317,6 +494,26 @@ final class PIB_Admin_Tools {
 						)
 					) . '">Create/Link Mapping</a>';
 				}
+				$action_links = array();
+				if ( '' !== $action ) {
+					$action_links[] = $action;
+				}
+				if ( isset( $guidance['links'] ) && is_array( $guidance['links'] ) ) {
+					foreach ( $guidance['links'] as $label => $url ) {
+						$label = sanitize_text_field( (string) $label );
+						$url   = esc_url_raw( (string) $url );
+						if ( '' === $label || '' === $url ) {
+							continue;
+						}
+						$action_links[] = '<a href="' . esc_url( $url ) . '">' . esc_html( $label ) . '</a>';
+					}
+				}
+				$action = implode( ' | ', $action_links );
+
+				$message_cell = esc_html( isset( $row['message'] ) ? (string) $row['message'] : '' );
+				if ( isset( $guidance['text'] ) && '' !== (string) $guidance['text'] ) {
+					$message_cell .= '<br /><span class="description">' . esc_html( (string) $guidance['text'] ) . '</span>';
+				}
 
 				echo '<tr>';
 				echo '<td>' . esc_html( (string) $row['id'] ) . '</td>';
@@ -327,7 +524,7 @@ final class PIB_Admin_Tools {
 				echo '<td>' . esc_html( $company ) . '</td>';
 				echo '<td>' . esc_html( $email ) . '</td>';
 				echo '<td>' . esc_html( $user_id > 0 ? (string) $user_id : '' ) . '</td>';
-				echo '<td>' . esc_html( isset( $row['message'] ) ? (string) $row['message'] : '' ) . '</td>';
+				echo '<td>' . $message_cell . '</td>';
 				echo '<td>' . $action . '</td>';
 				echo '</tr>';
 			}
@@ -348,6 +545,274 @@ final class PIB_Admin_Tools {
 	}
 
 	/**
+	 * Build reason-specific guidance for failure records.
+	 *
+	 * @param string $source_id Failure source event key.
+	 * @param string $reason_id Reason/error code.
+	 *
+	 * @return array<string, mixed>
+	 */
+	private function failure_reason_guidance( $source_id, $reason_id ) {
+		$source_id = sanitize_key( (string) $source_id );
+		$reason_id = sanitize_key( (string) $reason_id );
+
+		$token_check_url     = $this->advanced_panel_url( 'token' );
+		$bridge_setup_url    = $this->settings_page_url();
+		$bridge_contract_url = $this->advanced_panel_url( 'bridge_contract' );
+		$mappings_url       = $this->tab_url( 'mappings' );
+
+		$guidance = array(
+			'text'  => '',
+			'links' => array(),
+		);
+
+		$map = array(
+			'pib_missing_token' => array(
+				'text'  => 'No JWT handoff token reached intake. Ensure Shopify bridge route mints a token and redirects to WordPress intake with `token=...`.',
+				'links' => array(
+					'Token Check'  => $token_check_url,
+					'Bridge Contract' => $bridge_contract_url,
+					'Bridge Setup' => $bridge_setup_url,
+				),
+			),
+			'pib_missing_shared_secret' => array(
+				'text'  => 'WordPress Shared Secret is missing; intake cannot verify JWT signatures.',
+				'links' => array(
+					'Bridge Setup' => $bridge_setup_url,
+				),
+			),
+			'pib_missing_secret' => array(
+				'text'  => 'Shared secret is missing on verifier path. Configure matching secret values in Shopify app and WordPress.',
+				'links' => array(
+					'Bridge Setup' => $bridge_setup_url,
+				),
+			),
+			'pib_invalid_signature' => array(
+				'text'  => 'JWT signature did not match Shared Secret. Verify HS256 signing key parity between Shopify app and WordPress.',
+				'links' => array(
+					'Token Check'  => $token_check_url,
+					'Bridge Contract' => $bridge_contract_url,
+					'Bridge Setup' => $bridge_setup_url,
+				),
+			),
+			'pib_invalid_token_format' => array(
+				'text'  => 'Token is not valid JWT format (`header.payload.signature`).',
+				'links' => array(
+					'Token Check' => $token_check_url,
+					'Bridge Contract' => $bridge_contract_url,
+				),
+			),
+			'pib_invalid_token_encoding' => array(
+				'text'  => 'Token failed base64url decoding. Ensure Shopify sends an intact JWT without transport corruption.',
+				'links' => array(
+					'Token Check' => $token_check_url,
+				),
+			),
+			'pib_invalid_token_payload' => array(
+				'text'  => 'Token payload is invalid JSON or missing claim structure.',
+				'links' => array(
+					'Token Check' => $token_check_url,
+					'Bridge Contract' => $bridge_contract_url,
+				),
+			),
+			'pib_invalid_alg' => array(
+				'text'  => 'Token algorithm is unsupported; WordPress expects HS256.',
+				'links' => array(
+					'Bridge Contract' => $bridge_contract_url,
+					'Token Check' => $token_check_url,
+				),
+			),
+			'pib_invalid_issuer' => array(
+				'text'  => 'Token `iss` does not match WordPress Issuer exactly (including protocol and trailing slash behavior).',
+				'links' => array(
+					'Bridge Contract' => $bridge_contract_url,
+					'Bridge Setup' => $bridge_setup_url,
+					'Token Check'  => $token_check_url,
+				),
+			),
+			'pib_invalid_audience' => array(
+				'text'  => 'Token `aud` does not include configured Client ID.',
+				'links' => array(
+					'Bridge Contract' => $bridge_contract_url,
+					'Bridge Setup' => $bridge_setup_url,
+					'Token Check'  => $token_check_url,
+				),
+			),
+			'pib_missing_exp' => array(
+				'text'  => 'Token is missing `exp`; short-lived expiry claim is required.',
+				'links' => array(
+					'Bridge Contract' => $bridge_contract_url,
+					'Token Check' => $token_check_url,
+				),
+			),
+			'pib_token_expired' => array(
+				'text'  => 'Token expired before intake verification. Shorten redirect latency and check server clock skew.',
+				'links' => array(
+					'Token Check' => $token_check_url,
+					'Bridge Contract' => $bridge_contract_url,
+				),
+			),
+			'pib_token_not_yet_valid' => array(
+				'text'  => 'Token `nbf` is in the future relative to WordPress clock.',
+				'links' => array(
+					'Token Check' => $token_check_url,
+					'Bridge Setup' => $bridge_setup_url,
+				),
+			),
+			'pib_token_future_iat' => array(
+				'text'  => 'Token `iat` is in the future relative to WordPress clock.',
+				'links' => array(
+					'Token Check' => $token_check_url,
+					'Bridge Setup' => $bridge_setup_url,
+				),
+			),
+			'pib_missing_customer_id' => array(
+				'text'  => 'Token is missing `shopify_customer_id`/`customer_id` claim required for mapping resolution.',
+				'links' => array(
+					'Bridge Contract' => $bridge_contract_url,
+					'Token Check' => $token_check_url,
+				),
+			),
+			'pib_missing_company_id' => array(
+				'text'  => 'Company claim is required by current settings; add `company_id` in the Shopify-minted JWT or disable requirement.',
+				'links' => array(
+					'Bridge Contract' => $bridge_contract_url,
+					'Bridge Setup' => $bridge_setup_url,
+					'Token Check'  => $token_check_url,
+				),
+			),
+			'pib_missing_dest' => array(
+				'text'  => 'Token is missing destination claim (`dest`).',
+				'links' => array(
+					'Bridge Contract' => $bridge_contract_url,
+					'Bridge Setup' => $bridge_setup_url,
+				),
+			),
+			'pib_invalid_dest' => array(
+				'text'  => 'Destination claim is not allowed by current destination prefix policy.',
+				'links' => array(
+					'Bridge Setup' => $bridge_setup_url,
+					'Bridge Contract' => $bridge_contract_url,
+				),
+			),
+			'pib_missing_jti' => array(
+				'text'  => 'Token is missing `jti`; replay-protection identifier is required.',
+				'links' => array(
+					'Bridge Contract' => $bridge_contract_url,
+					'Token Check' => $token_check_url,
+				),
+			),
+			'pib_replay_detected' => array(
+				'text'  => 'The same token `jti` was already consumed. Ensure each bridge handoff token is single-use and unique.',
+				'links' => array(
+					'Bridge Contract' => $bridge_contract_url,
+				),
+			),
+			'pib_invalid_state' => array(
+				'text'  => 'State verification hook rejected this handoff token.',
+				'links' => array(
+					'Bridge Setup' => $bridge_setup_url,
+					'Token Check' => $token_check_url,
+				),
+			),
+			'pib_auth_rate_limited' => array(
+				'text'  => 'Auth failure rate limit is active. Wait for window expiry or reduce repeated invalid attempts.',
+				'links' => array(
+					'Bridge Setup' => $bridge_setup_url,
+				),
+			),
+			'pib_user_not_found' => array(
+				'text'  => 'JWT verified, but no eligible WordPress user mapping was resolved for this customer/company.',
+				'links' => array(
+					'Mappings'    => $mappings_url,
+					'Token Check' => $token_check_url,
+					'Bridge Contract' => $bridge_contract_url,
+				),
+			),
+			'missing_email_claim' => array(
+				'text'  => 'No email claim was available for first-time mapping. Include `email` (or `customer_email`) in JWT so WordPress can auto-link or auto-create user records.',
+				'links' => array(
+					'Bridge Contract' => $bridge_contract_url,
+					'Token Check' => $token_check_url,
+				),
+			),
+			'mapping_not_active' => array(
+				'text'  => 'A mapping exists but is not active. Activate it or update mapping policy.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+			'hint_user_conflict' => array(
+				'text'  => 'Hinted WordPress user conflicts with an active mapping for a different Shopify customer.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+			'pib_email_link_conflict' => array(
+				'text'  => 'Email auto-link is blocked because the target WordPress user is already mapped to another active customer.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+			'email_sync_conflict' => array(
+				'text'  => 'Shopify email claim belongs to a different WordPress user. Resolve duplicate users before continuing so customer/email identity stays aligned.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+			'email_sync_failed' => array(
+				'text'  => 'WordPress user email update failed while syncing to Shopify claim.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+			'user_conflicting_customer_mapping' => array(
+				'text'  => 'Resolved user has conflicting active mappings. Consolidate or correct mappings.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+			'mapping_upsert_failed' => array(
+				'text'  => 'JWT verified but mapping upsert failed; inspect mapping table state and retry.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+		);
+
+		if ( isset( $map[ $reason_id ] ) && is_array( $map[ $reason_id ] ) ) {
+			return $map[ $reason_id ];
+		}
+
+		if ( 0 === strpos( $reason_id, 'pib_' ) ) {
+			$guidance['text']  = 'This bridge error code indicates JWT handoff or policy verification failed before login completion.';
+			$guidance['links'] = array(
+				'Token Check' => $token_check_url,
+				'Bridge Contract' => $bridge_contract_url,
+				'Bridge Setup' => $bridge_setup_url,
+			);
+			return $guidance;
+		}
+
+		if ( 'auth_failure' === $source_id ) {
+			$guidance['text']  = 'Review token claims/signature and verify Shopify route is returning to intake with a signed JWT.';
+			$guidance['links'] = array(
+				'Token Check'  => $token_check_url,
+				'Bridge Contract' => $bridge_contract_url,
+				'Bridge Setup' => $bridge_setup_url,
+			);
+		} elseif ( 'mapping_resolution_denied' === $source_id ) {
+			$guidance['text']  = 'JWT may be valid, but mapping policy denied resolution for current customer/company/user context.';
+			$guidance['links'] = array(
+				'Mappings'    => $mappings_url,
+				'Token Check' => $token_check_url,
+			);
+		}
+
+		return $guidance;
+	}
+
+	/**
 	 * Render route access management tab.
 	 *
 	 * @return void
@@ -360,6 +825,9 @@ final class PIB_Admin_Tools {
 
 		$settings = $this->plugin->get_settings();
 		$rules    = PIB_Protected_Route_Policy::rules( $settings );
+		$setup_url = $this->settings_page_url();
+		$failures_url = $this->tab_url( 'failures' );
+		$token_url = $this->advanced_panel_url( 'token' );
 
 		$default_dest = isset( $settings['default_destination'] ) ? PIB_Destination::sanitize_destination( (string) $settings['default_destination'], '/' ) : '/';
 		$failure_dest = isset( $settings['failure_destination'] ) ? PIB_Destination::sanitize_destination( (string) $settings['failure_destination'], '/' ) : '/';
@@ -373,10 +841,28 @@ final class PIB_Admin_Tools {
 		}
 
 		$checks = array();
+		if ( empty( $rules['protected_prefixes'] ) ) {
+			$checks[] = array(
+				'level'   => 'error',
+				'message' => 'Protected Route Prefixes are empty; no protected destinations can be enforced.',
+				'action'  => 'Configure Route Prefixes',
+				'url'     => $setup_url,
+			);
+		}
+		if ( in_array( '/', $rules['unprotected_prefixes'], true ) ) {
+			$checks[] = array(
+				'level'   => 'error',
+				'message' => 'Unprotected Route Prefixes include "/" and disable protection globally.',
+				'action'  => 'Fix Unprotected Prefixes',
+				'url'     => $setup_url,
+			);
+		}
 		if ( ! empty( $failure_eval['is_protected'] ) ) {
 			$checks[] = array(
 				'level'   => 'error',
 				'message' => 'Failure Destination is protected and may cause sign-in loops.',
+				'action'  => 'Fix Failure Destination',
+				'url'     => $setup_url,
 			);
 		} else {
 			$checks[] = array(
@@ -384,11 +870,12 @@ final class PIB_Admin_Tools {
 				'message' => 'Failure Destination is publicly reachable.',
 			);
 		}
-
 		if ( empty( $default_eval['is_protected'] ) ) {
 			$checks[] = array(
 				'level'   => 'warning',
 				'message' => 'Default Destination is not currently protected.',
+				'action'  => 'Review Default Destination',
+				'url'     => $setup_url,
 			);
 		} else {
 			$checks[] = array(
@@ -397,23 +884,24 @@ final class PIB_Admin_Tools {
 			);
 		}
 
-		if ( in_array( '/', $rules['unprotected_prefixes'], true ) ) {
-			$checks[] = array(
-				'level'   => 'error',
-				'message' => 'Unprotected Route Prefixes include "/" and disable protection globally.',
-			);
-		}
+		echo '<h2 style="margin-top:18px;">Route Access Assistant</h2>';
+		echo '<p>Use this page to diagnose redirect loops and understand exactly how destination protection is resolved.</p>';
+		echo '<p><a class="button button-secondary" href="' . esc_url( $setup_url ) . '">Open Bridge Setup</a> <a class="button" href="' . esc_url( $failures_url ) . '">Open Mapping Failures</a> <a class="button" href="' . esc_url( $token_url ) . '">Open Token Check</a></p>';
 
-		echo '<h2 style="margin-top:18px;">Route Policy Overview</h2>';
-		echo '<p>Route access is resolved by protected prefixes, then optional unprotected overrides.</p>';
+		$managed_required = ! empty( $settings['require_managed_session_for_protected_routes'] );
+		$mapping_required = ! empty( $settings['require_active_mapping'] );
+
+		echo '<h3 style="margin-top:18px;">Current Policy Inputs</h3>';
 		echo '<table class="widefat striped" style="margin-top:10px;max-width:1000px;"><tbody>';
-		echo '<tr><th style="width:240px;">Protected Prefixes</th><td><code>' . esc_html( implode( ', ', $rules['protected_prefixes'] ) ) . '</code></td></tr>';
-		echo '<tr><th>Unprotected Prefixes</th><td><code>' . esc_html( implode( ', ', $rules['unprotected_prefixes'] ) ) . '</code></td></tr>';
-		echo '<tr><th>Default Destination</th><td><code>' . esc_html( $default_dest ) . '</code></td></tr>';
-		echo '<tr><th>Failure Destination</th><td><code>' . esc_html( $failure_dest ) . '</code></td></tr>';
+		echo '<tr><th style="width:240px;">Protected Prefixes</th><td><code>' . esc_html( implode( ', ', $rules['protected_prefixes'] ) ) . '</code></td><td>' . esc_html( 'Routes matching these prefixes are protection candidates.' ) . '</td></tr>';
+		echo '<tr><th>Unprotected Prefixes</th><td><code>' . esc_html( implode( ', ', $rules['unprotected_prefixes'] ) ) . '</code></td><td>' . esc_html( 'These override protected matches and stay public.' ) . '</td></tr>';
+		echo '<tr><th>Default Destination</th><td><code>' . esc_html( $default_dest ) . '</code></td><td>' . esc_html( ! empty( $default_eval['is_protected'] ) ? 'Currently protected.' : 'Currently public.' ) . '</td></tr>';
+		echo '<tr><th>Failure Destination</th><td><code>' . esc_html( $failure_dest ) . '</code></td><td>' . esc_html( ! empty( $failure_eval['is_protected'] ) ? 'Currently protected (loop risk).' : 'Currently public (recommended).' ) . '</td></tr>';
+		echo '<tr><th>Require Managed Session</th><td><code>' . esc_html( $managed_required ? 'enabled' : 'disabled' ) . '</code></td><td>' . esc_html( $managed_required ? 'Protected routes require bridge-managed session context.' : 'Any valid authenticated WP session can pass protected-route gate.' ) . '</td></tr>';
+		echo '<tr><th>Require Active Mapping</th><td><code>' . esc_html( $mapping_required ? 'enabled' : 'disabled' ) . '</code></td><td>' . esc_html( $mapping_required ? 'Protected routes also require active customer mapping context.' : 'Mapping context is not required for protected-route pass.' ) . '</td></tr>';
 		echo '</tbody></table>';
 
-		echo '<h3 style="margin-top:18px;">Policy Checks</h3>';
+		echo '<h3 style="margin-top:18px;">Risk Checks</h3>';
 		echo '<ul>';
 		foreach ( $checks as $check ) {
 			$level = isset( $check['level'] ) ? (string) $check['level'] : 'ok';
@@ -423,34 +911,45 @@ final class PIB_Admin_Tools {
 			} elseif ( 'warning' === $level ) {
 				$label = 'Warning';
 			}
-			echo '<li><strong>' . esc_html( $label ) . ':</strong> ' . esc_html( isset( $check['message'] ) ? (string) $check['message'] : '' ) . '</li>';
+			$message = isset( $check['message'] ) ? (string) $check['message'] : '';
+			$action  = isset( $check['action'] ) ? sanitize_text_field( (string) $check['action'] ) : '';
+			$url     = isset( $check['url'] ) ? esc_url_raw( (string) $check['url'] ) : '';
+			echo '<li><strong>' . esc_html( $label ) . ':</strong> ' . esc_html( $message );
+			if ( '' !== $action && '' !== $url ) {
+				echo ' <a href="' . esc_url( $url ) . '">' . esc_html( $action ) . '</a>';
+			}
+			echo '</li>';
 		}
 		echo '</ul>';
 
 		echo '<h3 style="margin-top:18px;">Route Tester</h3>';
-		echo '<form method="get">';
+		echo '<form method="get" action="' . esc_url( $this->advanced_panel_url( 'routes' ) ) . '">';
 		echo '<input type="hidden" name="page" value="pib-tools" />';
-		echo '<input type="hidden" name="tab" value="routes" />';
+		echo '<input type="hidden" name="tab" value="advanced" />';
+		echo '<input type="hidden" name="panel" value="routes" />';
 		echo '<input type="text" class="regular-text code" name="dest" value="' . esc_attr( $test_raw ) . '" placeholder="/dashboard/backorders?status=open" /> ';
 		submit_button( 'Evaluate', 'secondary', '', false );
 		echo '</form>';
 
 		if ( is_array( $test_eval ) ) {
 			$is_protected = ! empty( $test_eval['is_protected'] );
-			echo '<p><strong>Result:</strong> ' . esc_html( $is_protected ? 'Protected' : 'Public' ) . '</p>';
-			echo '<p><strong>Normalized Destination:</strong> <code>' . esc_html( isset( $test_eval['destination'] ) ? (string) $test_eval['destination'] : '' ) . '</code></p>';
-			echo '<p><strong>Matched Protected Prefix:</strong> <code>' . esc_html( isset( $test_eval['matched_protected'] ) ? (string) $test_eval['matched_protected'] : '' ) . '</code></p>';
-			echo '<p><strong>Matched Unprotected Prefix:</strong> <code>' . esc_html( isset( $test_eval['matched_unprotected'] ) ? (string) $test_eval['matched_unprotected'] : '' ) . '</code></p>';
+			echo '<table class="widefat striped" style="max-width:1000px;margin-top:12px;"><tbody>';
+			echo '<tr><th style="width:240px;">Result</th><td>' . esc_html( $is_protected ? 'Protected' : 'Public' ) . '</td></tr>';
+			echo '<tr><th>Normalized Destination</th><td><code>' . esc_html( isset( $test_eval['destination'] ) ? (string) $test_eval['destination'] : '' ) . '</code></td></tr>';
+			echo '<tr><th>Matched Protected Prefix</th><td><code>' . esc_html( isset( $test_eval['matched_protected'] ) ? (string) $test_eval['matched_protected'] : '' ) . '</code></td></tr>';
+			echo '<tr><th>Matched Unprotected Prefix</th><td><code>' . esc_html( isset( $test_eval['matched_unprotected'] ) ? (string) $test_eval['matched_unprotected'] : '' ) . '</code></td></tr>';
+			echo '<tr><th>Expected Visitor Behavior</th><td>' . esc_html( $this->route_behavior_summary( $test_eval, $settings ) ) . '</td></tr>';
+			echo '</tbody></table>';
 		}
 
 		$samples = PIB_Protected_Route_Policy::sample_destinations( $settings );
 		echo '<h3 style="margin-top:18px;">Sample Routes</h3>';
 		echo '<table class="widefat striped" style="max-width:1000px;">';
-		echo '<thead><tr><th>Destination</th><th>Protected?</th><th>Matched Protected</th><th>Matched Unprotected</th><th>Action</th></tr></thead><tbody>';
+		echo '<thead><tr><th>Destination</th><th>Protected?</th><th>Matched Protected</th><th>Matched Unprotected</th><th>Expected Behavior</th><th>Action</th></tr></thead><tbody>';
 		foreach ( $samples as $sample ) {
 			$evaluation = PIB_Protected_Route_Policy::evaluate_destination( $sample, $settings );
 			$is_protected = ! empty( $evaluation['is_protected'] );
-			$eval_url = $this->tab_url(
+			$eval_url = $this->advanced_panel_url(
 				'routes',
 				array(
 					'dest' => (string) $sample,
@@ -461,10 +960,43 @@ final class PIB_Admin_Tools {
 			echo '<td>' . esc_html( $is_protected ? 'Yes' : 'No' ) . '</td>';
 			echo '<td><code>' . esc_html( isset( $evaluation['matched_protected'] ) ? (string) $evaluation['matched_protected'] : '' ) . '</code></td>';
 			echo '<td><code>' . esc_html( isset( $evaluation['matched_unprotected'] ) ? (string) $evaluation['matched_unprotected'] : '' ) . '</code></td>';
+			echo '<td>' . esc_html( $this->route_behavior_summary( $evaluation, $settings ) ) . '</td>';
 			echo '<td><a href="' . esc_url( $eval_url ) . '">Evaluate</a></td>';
 			echo '</tr>';
 		}
 		echo '</tbody></table>';
+	}
+
+	/**
+	 * Build visitor behavior summary for route policy evaluation result.
+	 *
+	 * @param array<string, mixed> $evaluation Route evaluation payload.
+	 * @param array<string, mixed> $settings   Current settings.
+	 *
+	 * @return string
+	 */
+	private function route_behavior_summary( $evaluation, $settings ) {
+		$evaluation = is_array( $evaluation ) ? $evaluation : array();
+		$settings   = is_array( $settings ) ? $settings : array();
+		$is_protected = ! empty( $evaluation['is_protected'] );
+		if ( ! $is_protected ) {
+			return 'Public route; protection redirect does not trigger.';
+		}
+
+		$managed_required = ! empty( $settings['require_managed_session_for_protected_routes'] );
+		$mapping_required = ! empty( $settings['require_active_mapping'] );
+		$parts            = array();
+
+		if ( $managed_required ) {
+			$parts[] = 'requires bridge-managed session';
+		} else {
+			$parts[] = 'requires authenticated WordPress session';
+		}
+		if ( $mapping_required ) {
+			$parts[] = 'requires active customer mapping';
+		}
+
+		return 'Protected route; ' . implode( ' and ', $parts ) . '.';
 	}
 
 	/**
@@ -583,7 +1115,7 @@ final class PIB_Admin_Tools {
 					'tab'        => 'health',
 					'pib_action' => 'download_health_snapshot',
 				),
-				admin_url( 'tools.php' )
+				admin_url( 'admin.php' )
 			),
 			'pib_download_health_snapshot'
 		);
@@ -701,7 +1233,7 @@ final class PIB_Admin_Tools {
 					'tab'        => 'logs',
 					'pib_action' => 'clear_logs',
 				),
-				admin_url( 'tools.php' )
+				admin_url( 'admin.php' )
 			),
 			'pib_clear_logs'
 		);
@@ -929,7 +1461,7 @@ final class PIB_Admin_Tools {
 
 		echo '<h2 style="margin-top:18px;">Create or Link Mapping</h2>';
 		echo '<p>Create or update Shopify customer/company to WordPress user mapping records.</p>';
-		echo '<form method="post" action="' . esc_url( admin_url( 'tools.php' ) ) . '" style="margin-top:10px;">';
+		echo '<form method="post" action="' . esc_url( $this->tab_url( 'mappings' ) ) . '" style="margin-top:10px;">';
 		wp_nonce_field( 'pib_upsert_mapping' );
 		echo '<input type="hidden" name="page" value="pib-tools" />';
 		echo '<input type="hidden" name="tab" value="mappings" />';
@@ -963,7 +1495,7 @@ final class PIB_Admin_Tools {
 				'to_status'  => sanitize_key( (string) $to_status ),
 				'_wpnonce'   => wp_create_nonce( 'pib_mapping_action_' . absint( $mapping_id ) ),
 			),
-			admin_url( 'tools.php' )
+			admin_url( 'admin.php' )
 		);
 	}
 
@@ -1069,7 +1601,46 @@ final class PIB_Admin_Tools {
 			is_array( $extra ) ? $extra : array()
 		);
 
-		return add_query_arg( $args, admin_url( 'tools.php' ) );
+		return add_query_arg( $args, admin_url( 'admin.php' ) );
+	}
+
+	/**
+	 * Build advanced panel URL.
+	 *
+	 * @param string               $panel Panel slug.
+	 * @param array<string, mixed> $extra Extra query args.
+	 *
+	 * @return string
+	 */
+	private function advanced_panel_url( $panel, $extra = array() ) {
+		$panel = sanitize_key( (string) $panel );
+		if ( '' === $panel ) {
+			$panel = 'routes';
+		}
+
+		$extra = is_array( $extra ) ? $extra : array();
+		$args  = array_merge(
+			array(
+				'panel' => $panel,
+			),
+			$extra
+		);
+
+		return $this->tab_url( 'advanced', $args );
+	}
+
+	/**
+	 * Build Setup page URL.
+	 *
+	 * @return string
+	 */
+	private function settings_page_url() {
+		return add_query_arg(
+			array(
+				'page' => 'pib-settings',
+			),
+			admin_url( 'admin.php' )
+		);
 	}
 
 	/**

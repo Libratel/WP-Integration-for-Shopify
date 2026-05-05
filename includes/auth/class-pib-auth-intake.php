@@ -112,7 +112,7 @@ final class PIB_Auth_Intake {
 
 		$shopify_customer_id = PIB_Customer_Mapping::customer_id_from_claims( $verified_claims );
 		$company_id          = PIB_Customer_Mapping::company_id_from_claims( $verified_claims );
-		$email               = isset( $verified_claims['email'] ) ? sanitize_email( (string) $verified_claims['email'] ) : '';
+		$email               = PIB_Customer_Mapping::email_from_claims( $verified_claims );
 		if ( '' === $state && isset( $verified_claims['state'] ) && is_scalar( $verified_claims['state'] ) ) {
 			$state = sanitize_text_field( (string) $verified_claims['state'] );
 		}
