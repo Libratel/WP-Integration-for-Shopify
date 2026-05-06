@@ -114,6 +114,13 @@ final class PIB_Bridge_Simulator {
 			$dest = $default_dest;
 		}
 
+		$state_ttl = isset( $settings['handoff_state_ttl_seconds'] ) ? absint( $settings['handoff_state_ttl_seconds'] ) : 300;
+		$state_ttl = max( 60, min( 1800, $state_ttl ) );
+		$state     = PIB_Security::issue_handoff_state( $state_ttl );
+		if ( '' === $state ) {
+			$this->fail_with_code( 'missing_state' );
+		}
+
 		$now    = time();
 		$claims = array(
 			'iss'                 => $issuer,
@@ -126,7 +133,7 @@ final class PIB_Bridge_Simulator {
 			'company_id'          => $company_id,
 			'email'               => $email,
 			'dest'                => $dest,
-			'state'               => 'pib_bridge_sim',
+			'state'               => $state,
 		);
 
 		$token = $this->sign_hs256( $claims, $token_secret );
@@ -134,14 +141,7 @@ final class PIB_Bridge_Simulator {
 			$this->fail_with_code( 'token_signing_failed' );
 		}
 
-		$redirect = add_query_arg(
-			array(
-				'token' => $token,
-			),
-			PIB_Plugin::intake_url()
-		);
-
-		wp_safe_redirect( $redirect );
+		$this->render_intake_post_form( (string) $token, $state );
 		exit;
 	}
 
@@ -230,6 +230,28 @@ final class PIB_Bridge_Simulator {
 
 		wp_safe_redirect( $redirect );
 		exit;
+	}
+
+	/**
+	 * Render auto-submit POST form to intake endpoint.
+	 *
+	 * @param string $token JWT token.
+	 * @param string $state Handoff state.
+	 *
+	 * @return void
+	 */
+	private function render_intake_post_form( $token, $state ) {
+		nocache_headers();
+		$intake_url = PIB_Plugin::intake_url();
+
+		echo '<!doctype html><html><head><meta charset="utf-8" /><meta name="robots" content="noindex,nofollow" /><title>Portal Bridge Simulator</title></head><body>';
+		echo '<form id="pib-sim-post" method="post" action="' . esc_url( $intake_url ) . '">';
+		echo '<input type="hidden" name="token" value="' . esc_attr( $token ) . '" />';
+		echo '<input type="hidden" name="state" value="' . esc_attr( $state ) . '" />';
+		echo '<noscript><p>Click continue to submit simulator handoff.</p><button type="submit">Continue</button></noscript>';
+		echo '</form>';
+		echo '<script>document.getElementById("pib-sim-post").submit();</script>';
+		echo '</body></html>';
 	}
 
 	/**

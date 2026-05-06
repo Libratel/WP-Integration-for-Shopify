@@ -207,9 +207,8 @@ final class PIB_Customer_Mapping {
 			$resolution_action = 'resolved_hint';
 		}
 
-		// Bridge identity flow is email-driven: always attempt link/create from verified claims.
-		$auto_link_by_email = true;
-		$auto_create        = true;
+		$auto_link_by_email = ! empty( $settings['auto_link_existing_users_by_email'] );
+		$auto_create        = ! empty( $settings['auto_create_users'] );
 
 		if ( ! $user && $auto_link_by_email && '' !== $email ) {
 			$email_link_user = $this->resolve_guarded_email_link_user( $email, $shopify_customer_id );

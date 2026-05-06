@@ -187,6 +187,32 @@ final class PIB_Destination {
 	}
 
 	/**
+	 * Resolve a safe public failure destination.
+	 *
+	 * Prevents fallback loops into wp-admin/wp-login when auth fails.
+	 *
+	 * @param mixed  $destination Raw destination.
+	 * @param string $fallback    Fallback internal path.
+	 * @return string
+	 */
+	public static function safe_failure_destination( $destination, $fallback = '/portal-login' ) {
+		$fallback = self::sanitize_destination( (string) $fallback, '/portal-login' );
+		$dest     = self::sanitize_destination( $destination, $fallback );
+		$path     = (string) wp_parse_url( $dest, PHP_URL_PATH );
+		$path     = '' !== $path ? $path : '/';
+		$path     = rtrim( $path, '/' );
+		if ( '' === $path ) {
+			$path = '/';
+		}
+
+		if ( '/wp-login.php' === $path || 0 === strpos( $path, '/wp-admin' ) ) {
+			return $fallback;
+		}
+
+		return $dest;
+	}
+
+	/**
 	 * Normalize path+query values.
 	 *
 	 * @param string $value    Candidate path+query.

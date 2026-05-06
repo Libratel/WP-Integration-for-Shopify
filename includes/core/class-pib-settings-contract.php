@@ -115,6 +115,25 @@ final class PIB_Settings_Contract {
 				'max'         => 300,
 				'ui'          => true,
 			),
+			'require_handoff_state' => array(
+				'type'        => 'checkbox',
+				'default'     => 1,
+				'section'     => 'identity_auth_bridge',
+				'label'       => 'Require Handoff State Verification',
+				'description' => 'Require browser-bound one-time state validation on JWT intake to prevent login CSRF/session confusion.',
+				'ui'          => true,
+			),
+			'handoff_state_ttl_seconds' => array(
+				'type'        => 'int_range',
+				'default'     => 300,
+				'section'     => 'identity_auth_bridge',
+				'label'       => 'Handoff State TTL (seconds)',
+				'description' => 'How long state values remain valid between sign-in launch and JWT intake.',
+				'placeholder' => '300',
+				'min'         => 60,
+				'max'         => 1800,
+				'ui'          => true,
+			),
 			'require_company_id' => array(
 				'type'        => 'checkbox',
 				'default'     => 1,
@@ -358,6 +377,14 @@ final class PIB_Settings_Contract {
 				'max'         => 1440,
 				'ui'          => true,
 			),
+			'allow_token_query_fallback' => array(
+				'type'        => 'checkbox',
+				'default'     => 0,
+				'section'     => 'operations_audit',
+				'label'       => 'Allow Legacy JWT Query Transport',
+				'description' => 'Compatibility mode: accept `token` in query string. Disable to require POST-based handoff transport.',
+				'ui'          => true,
+			),
 			'audit_logging_enabled' => array(
 				'type'        => 'checkbox',
 				'default'     => 1,
@@ -473,6 +500,15 @@ final class PIB_Settings_Contract {
 			$is_ui_field = ! isset( $definition['ui'] ) || ! empty( $definition['ui'] );
 			if ( 'checkbox' === $type && $is_ui_field && ! array_key_exists( $key, $input ) ) {
 				$candidate[ $key ] = 0;
+				continue;
+			}
+
+			// Preserve existing secrets when password fields are left empty in UI saves.
+			if ( 'password' === $type && $is_ui_field && array_key_exists( $key, $input ) ) {
+				$incoming = trim( self::to_scalar_string( $input[ $key ] ) );
+				if ( '' === $incoming && array_key_exists( $key, $existing ) ) {
+					$candidate[ $key ] = (string) $existing[ $key ];
+				}
 			}
 		}
 
@@ -718,6 +754,34 @@ final class PIB_Settings_Contract {
 				$results,
 				'strong_token_secret',
 				'Shared Secret length is acceptable.'
+			);
+		}
+
+		if ( empty( $settings['require_handoff_state'] ) ) {
+			self::add_warning(
+				$results,
+				'handoff_state_not_required',
+				'Handoff state verification is disabled. This weakens protection against login CSRF/session confusion.'
+			);
+		} else {
+			self::add_ok(
+				$results,
+				'handoff_state_required',
+				'Handoff state verification is enabled.'
+			);
+		}
+
+		if ( ! empty( $settings['allow_token_query_fallback'] ) ) {
+			self::add_warning(
+				$results,
+				'legacy_query_token_transport',
+				'Legacy JWT query transport is enabled. Query-string tokens can leak through logs, browser history, and referrers.'
+			);
+		} else {
+			self::add_ok(
+				$results,
+				'legacy_query_token_transport_disabled',
+				'JWT query-string transport fallback is disabled.'
 			);
 		}
 

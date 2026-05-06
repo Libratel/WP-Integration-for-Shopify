@@ -170,9 +170,13 @@ Extensibility hooks:
 
 WordPress endpoint:
 
-`/wp-admin/admin-post.php?action=pib_auth_intake&token=...`
+`/wp-admin/admin-post.php?action=pib_auth_intake`
 
 The same URL is shown in plugin settings as **Intake URL**.
+Recommended transport is POST with form fields:
+
+- `token` (signed JWT)
+- `state` (launch-bound one-time state)
 
 Legacy query-signature handoff (`customer_id/company_id/email/dest/ts/sig`) is disabled.
 
@@ -187,6 +191,7 @@ Minimum required claims:
 - `shopify_customer_id` or `customer_id` (stable customer identifier)
 - `company_id` (required account/company identifier)
 - `dest` (internal destination path, example `/dashboard/backorders?status=open`)
+- `state` (required in default strict handoff mode; should mirror launch `state`)
 
 Optional/used in Phase 5:
 
@@ -219,6 +224,7 @@ The shortcode sends users to Shopify issuer URL with:
 - `dest` (validated internal destination)
 - `intake` (WordPress intake callback URL)
 - `client_id` (expected token audience)
+- `state` (one-time browser-bound handoff state)
 - `source=partner_portal`
 
 Logout shortcode:
@@ -275,8 +281,11 @@ Default role behavior for auto-created users:
 - `Enable Coordinated Logout`
 - `Upstream Logout URL`
 - `Upstream Logout Return Param`
+- `Require Handoff State Verification`
+- `Handoff State TTL (seconds)`
 - `Auth Failure Limit`
 - `Auth Failure Window (minutes)`
+- `Allow Legacy JWT Query Transport`
 - `Enable Audit Logging`
 - `Audit Log Retention (days)`
 
@@ -361,8 +370,7 @@ Logout/session strategy:
 ## Bridge Simulator (Prompt 1)
 
 - In `Portal Bridge -> Tools -> Advanced`, admins can launch a short-lived test handoff token via **Bridge Simulator (Prompt 1)**.
-- This simulates the Shopify bridge redirect into:
-  - `wp-admin/admin-post.php?action=pib_auth_intake&token=...`
+- This simulates the Shopify bridge handoff into WordPress intake via auto-submit POST (`token` + `state`).
 - It is intended for validating WordPress intake/mapping/session flow before external Shopify route wiring is complete.
 
 ## Bridge Contract (Prompt 2)
@@ -370,13 +378,13 @@ Logout/session strategy:
 - `Portal Bridge -> Tools -> Advanced` includes **Bridge Contract (Prompt 2)**.
 - It shows:
   - canonical launch URL generated from configured settings
-  - expected Shopify redirect output into WordPress intake
-  - required JWT claims and expected values (`iss`, `aud`, `exp`, `jti`, `shopify_customer_id`, `company_id`, `dest`)
+  - expected Shopify intake handoff shape (POST URL + form fields)
+  - required JWT claims and expected values (`iss`, `aud`, `exp`, `jti`, `shopify_customer_id`, `company_id`, `dest`, `state`)
   - implementation wiring map (what to configure in WordPress, Shopify App Proxy, and token-minting endpoint)
   - copy/paste Cloudflare Worker token-minting script prefilled from current WP settings
   - required worker environment variable matrix (`WP_JWT_SECRET`, `WP_ISSUER`, `WP_AUDIENCE`, `COMPANY_ID`)
   - optional Shopify theme button snippet for manual launch testing
-- Outbound sign-in URL now includes: `return_url`, `intake`, `dest`, `client_id`, and `source=partner_portal`.
+- Outbound sign-in URL now includes: `return_url`, `intake`, `dest`, `client_id`, `state`, and `source=partner_portal`.
 
 ## Setup Assistant (Prompt 3)
 
@@ -402,6 +410,7 @@ Expected implementation flow in Shopify app route:
    - `intake`
    - `dest`
    - `client_id`
+   - `state`
    - `source=partner_portal`
 2. Resolve authenticated Shopify customer context.
 3. Build a short-lived HS256 JWT using the same shared secret as WordPress `token_secret`.
@@ -413,9 +422,11 @@ Expected implementation flow in Shopify app route:
    - `shopify_customer_id` (or `customer_id`)
    - `company_id` (when WordPress requires company claim)
    - `dest` (must match allowed destination prefixes)
+   - `state` (must mirror inbound launch `state`)
    - `email` (recommended for first-time auto-link/auto-create and identity sync)
-5. Redirect browser to WordPress intake:
-   - `https://partners.example.com/wp-admin/admin-post.php?action=pib_auth_intake&token=<jwt>`
+5. Return an auto-submit HTML form that POSTs to WordPress intake with:
+   - `token=<jwt>`
+   - `state=<state>`
 
 Operational notes:
 
@@ -424,9 +435,21 @@ Operational notes:
 - Missing `company_id` fails intake when `Require Company ID Claim` is enabled.
 - Normal Shopify login without the JWT redirect does not create a WordPress session.
 
+### Prompt 2 Migration Checklist
+
+1. Deploy updated token-minting endpoint that:
+   - preserves launch `state`
+   - includes `state` in JWT claims
+   - submits `token` + `state` to WordPress intake via POST
+2. Confirm WordPress settings:
+   - `Require Handoff State Verification` = enabled
+   - `Allow Legacy JWT Query Transport` = disabled
+3. If your external route is not updated yet, temporarily enable `Allow Legacy JWT Query Transport` during cutover.
+4. Re-run smoke tests below and verify recent `auth_success` events in Audit Logs.
+
 ### Bridge Smoke Test Checklist
 
 1. Run **Internal Token Test** in WordPress settings to verify intake/mapping/session path.
-2. Run **Test Shopify Bridge Route** from settings (or protected portal route) and confirm redirect returns to WordPress intake.
+2. Run **Test Shopify Bridge Route** from settings (or protected portal route) and confirm handoff submits into WordPress intake.
 3. Check `Portal Bridge -> Tools -> Failures` for `auth_failure`/`mapping_resolution_denied` reason codes.
 4. Check `Portal Bridge -> Tools -> Audit Logs` for recent `auth_success` or `auth_failure` events.

@@ -268,12 +268,21 @@ final class PIB_Settings {
 			}
 		}
 
+		$input_value = is_scalar( $value ) ? (string) $value : '';
+		if ( 'password' === $type ) {
+			// Never render stored secrets back into HTML.
+			$input_value = '';
+			if ( '' === (string) ( isset( $definition['placeholder'] ) ? $definition['placeholder'] : '' ) && ! empty( $value ) ) {
+				$definition['placeholder'] = '(configured)';
+			}
+		}
+
 		printf(
 			'<input type="%1$s" class="regular-text" name="%2$s[%3$s]" value="%4$s" placeholder="%5$s" autocomplete="off"%6$s />',
 			esc_attr( $input_type ),
 			esc_attr( PIB_Plugin::OPTION_KEY ),
 			esc_attr( $key ),
-			esc_attr( is_scalar( $value ) ? (string) $value : '' ),
+			esc_attr( $input_value ),
 			esc_attr( isset( $definition['placeholder'] ) ? (string) $definition['placeholder'] : '' ),
 			$attributes // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 		);
@@ -628,6 +637,8 @@ final class PIB_Settings {
 			'allowed_destination_prefixes',
 			'failure_destination',
 			'require_company_id',
+			'require_handoff_state',
+			'allow_token_query_fallback',
 			'auto_link_existing_users_by_email',
 			'auto_create_users',
 			'new_user_role',
@@ -766,7 +777,7 @@ final class PIB_Settings {
 					<a class="button" href="<?php echo esc_url( $token_tool_url ); ?>">Open Token Check</a>
 					<a class="button" href="<?php echo esc_url( $contract_tool_url ); ?>">Open Bridge Contract</a>
 				</div>
-				<p class="description">The external route test must eventually redirect back to WordPress intake with a signed JWT `token` query parameter.</p>
+				<p class="description">The external route test must eventually return to WordPress intake with a signed JWT token payload (POST recommended; legacy query transport is optional).</p>
 				<?php $this->render_bridge_readiness_panel( $settings, $can_bridge_test ); ?>
 				<?php if ( ! $can_bridge_test ) : ?>
 					<p class="description">If no active mapping exists yet, Internal Token Test will return a clear setup notice instead of signing in.</p>
@@ -2266,7 +2277,7 @@ final class PIB_Settings {
 				<tr><td>Client ID</td><td><code><?php echo esc_html( '' !== $client_id ? $client_id : '(not set)' ); ?></code></td><td><?php echo esc_html( '' !== $client_id ? 'Configured' : 'Missing' ); ?></td></tr>
 				<tr><td>Shared Secret</td><td><code><?php echo esc_html( $has_secret ? '(configured)' : '(not set)' ); ?></code></td><td><?php echo esc_html( $has_secret ? 'Configured' : 'Missing' ); ?></td></tr>
 				<tr><td>Issuer (iss)</td><td><code><?php echo esc_html( '' !== $issuer ? $issuer : '(not set)' ); ?></code></td><td><?php echo esc_html( '' !== $issuer ? 'Configured' : 'Missing' ); ?></td></tr>
-				<tr><td>WordPress Intake URL</td><td><code><?php echo esc_html( $intake_url ); ?></code></td><td>Use this in your token redirect.</td></tr>
+				<tr><td>WordPress Intake URL</td><td><code><?php echo esc_html( $intake_url ); ?></code></td><td>Use this as the intake POST target.</td></tr>
 			</tbody>
 		</table>
 		<h3>Step 2: Configure Shopify App Proxy</h3>
@@ -2301,6 +2312,7 @@ final class PIB_Settings {
 			<li><code>WP_AUDIENCE</code> = <code><?php echo esc_html( '' !== $client_id ? $client_id : 'your Client ID' ); ?></code></li>
 			<li><code>COMPANY_ID</code> = <code><?php echo esc_html( $require_company ? 'default (or your company id)' : '(optional)' ); ?></code></li>
 		</ul>
+		<p class="description">Pass through launch <code>state</code> unchanged, include it in JWT claims, and submit <code>token</code> + <code>state</code> to intake via POST.</p>
 		<h3>Step 4: Verify End-to-End</h3>
 		<div class="pib-test-actions">
 			<a class="button button-primary" href="<?php echo esc_url( $shopify_action_url ); ?>"<?php echo $shopify_target_attr; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>>Run Shopify Bridge Test</a>
@@ -2308,6 +2320,7 @@ final class PIB_Settings {
 			<a class="button" href="<?php echo esc_url( $token_tool_url ); ?>">Open Token Check</a>
 			<a class="button" href="<?php echo esc_url( $failures_url ); ?>">Open Mapping Failures</a>
 		</div>
+		<p class="description">Cutover tip: if your external route is still query-based, temporarily enable <strong>Allow Legacy JWT Query Transport</strong>, then disable it after POST handoff is live.</p>
 		<?php if ( ! $can_bridge_test ) : ?>
 			<p class="description" style="margin-top:8px;">Internal Token Test remains available and will report missing prerequisites directly if mapping context is not ready.</p>
 		<?php endif; ?>
@@ -2357,13 +2370,7 @@ final class PIB_Settings {
 				'notes' => $company_hint,
 			),
 		);
-		$redirect_demo = add_query_arg(
-			array(
-				'token' => '<jwt>',
-				'dest'  => $default_dest,
-			),
-			$intake_url
-		);
+		$handoff_fields_demo = 'token=<jwt>&state=<state>';
 
 		if ( '' !== $shopify_url ) {
 			$launch_url = add_query_arg(
@@ -2372,6 +2379,7 @@ final class PIB_Settings {
 					'intake'     => $intake_url,
 					'dest'       => $default_dest,
 					'client_id'  => $client_id,
+					'state'      => 'wp_launch_state',
 					'source'     => 'partner_portal',
 				),
 				$shopify_url
@@ -2392,8 +2400,10 @@ final class PIB_Settings {
 		<?php else : ?>
 			<textarea class="large-text code" rows="3" readonly><?php echo esc_textarea( $launch_url ); ?></textarea>
 		<?php endif; ?>
-		<h3>Expected Shopify Redirect Output</h3>
-		<p><code><?php echo esc_html( $redirect_demo ); ?></code></p>
+		<p class="description">`state=wp_launch_state` is a documentation placeholder here. Runtime launches should provide a fresh one-time state value.</p>
+		<h3>Expected Shopify Intake Handoff</h3>
+		<p><strong>POST URL:</strong> <code><?php echo esc_html( $intake_url ); ?></code></p>
+		<p><strong>POST fields:</strong> <code><?php echo esc_html( $handoff_fields_demo ); ?></code></p>
 		<h3>Required JWT Claims</h3>
 		<table class="widefat striped" style="max-width:1000px;">
 			<thead>
@@ -2412,6 +2422,7 @@ final class PIB_Settings {
 				<tr><td><code>shopify_customer_id</code></td><td><code>customer id</code></td><td>Required stable identity claim.</td></tr>
 				<tr><td><code>company_id</code></td><td><code>company/account id</code></td><td><?php echo esc_html( ! empty( $settings['require_company_id'] ) ? 'Required by current settings.' : 'Optional in current settings.' ); ?></td></tr>
 				<tr><td><code>dest</code></td><td><code><?php echo esc_html( $default_dest ); ?></code></td><td>Must match Allowed Destination Prefixes.</td></tr>
+				<tr><td><code>state</code></td><td><code>launch state</code></td><td>Must match launch query <code>state</code> and intake POST <code>state</code>.</td></tr>
 				<tr><td><code>email</code></td><td><code>customer email</code></td><td>Recommended for auto-link/auto-create behavior.</td></tr>
 			</tbody>
 		</table>
@@ -2438,7 +2449,7 @@ final class PIB_Settings {
 				<tr>
 					<td><strong>Token Minting Endpoint</strong></td>
 					<td>Cloudflare Worker / custom backend route</td>
-					<td>Accepts launch params, resolves logged-in customer, signs HS256 JWT, redirects to WordPress intake with <code>token=...</code>.</td>
+					<td>Accepts launch params, resolves logged-in customer, signs HS256 JWT, and returns an auto-submit POST to WordPress intake with <code>token</code> + <code>state</code>.</td>
 				</tr>
 				<tr>
 					<td><strong>WordPress Intake</strong></td>
@@ -2448,7 +2459,7 @@ final class PIB_Settings {
 			</tbody>
 		</table>
 		<h3>Cloudflare Worker Script (Copy/Paste)</h3>
-		<p class="description">Deploy this on the endpoint used by Shopify App Proxy. It is prefilled from your current WordPress settings.</p>
+		<p class="description">Deploy this on the endpoint used by Shopify App Proxy. It is prefilled from your current WordPress settings and uses POST handoff into WordPress intake.</p>
 		<textarea class="large-text code" rows="40" readonly><?php echo esc_textarea( $worker_script ); ?></textarea>
 		<h3>Worker Environment Variables</h3>
 		<table class="widefat striped" style="max-width:1000px;">
@@ -2474,9 +2485,9 @@ final class PIB_Settings {
 		<textarea class="large-text code" rows="14" readonly><?php echo esc_textarea( $storefront_tpl ); ?></textarea>
 		<h3>Connection Trace</h3>
 		<ol>
-			<li>WordPress sends user to Shopify app proxy URL with <code>return_url</code>, <code>intake</code>, <code>dest</code>, and <code>client_id</code>.</li>
+			<li>WordPress sends user to Shopify app proxy URL with <code>return_url</code>, <code>intake</code>, <code>dest</code>, <code>client_id</code>, and <code>state</code>.</li>
 			<li>Shopify app proxy forwards request to your worker/backend endpoint.</li>
-			<li>Worker/backend detects logged-in customer, signs JWT with shared secret, redirects to WordPress intake.</li>
+			<li>Worker/backend detects logged-in customer, signs JWT with shared secret, and serves an auto-submit HTML form POST to WordPress intake.</li>
 			<li>WordPress verifies JWT, resolves mapping/user, and creates WordPress session.</li>
 		</ol>
 		<?php
@@ -2565,9 +2576,17 @@ final class PIB_Settings {
 		$client_id    = $this->expected_audience( $settings );
 		$issuer       = isset( $settings['expected_issuer'] ) ? trim( (string) $settings['expected_issuer'] ) : '';
 		$company_id   = ! empty( $settings['require_company_id'] ) ? 'default' : '';
+		$shopify_url  = isset( $settings['shopify_login_url'] ) ? trim( (string) $settings['shopify_login_url'] ) : '';
+		$default_shop = '';
 
 		if ( '' === $client_id ) {
 			$client_id = 'partner-portal';
+		}
+		if ( '' !== $shopify_url ) {
+			$shop_host = wp_parse_url( $shopify_url, PHP_URL_HOST );
+			if ( is_string( $shop_host ) && '' !== $shop_host && preg_match( '/\.myshopify\.com$/i', $shop_host ) ) {
+				$default_shop = strtolower( $shop_host );
+			}
 		}
 
 		$intake_json  = wp_json_encode( (string) $intake_url );
@@ -2575,6 +2594,7 @@ final class PIB_Settings {
 		$client_json  = wp_json_encode( (string) $client_id );
 		$issuer_json  = wp_json_encode( (string) $issuer );
 		$company_json = wp_json_encode( (string) $company_id );
+		$shop_json    = wp_json_encode( (string) $default_shop );
 
 		if ( ! is_string( $intake_json ) ) {
 			$intake_json = '""';
@@ -2591,8 +2611,13 @@ final class PIB_Settings {
 		if ( ! is_string( $company_json ) ) {
 			$company_json = '""';
 		}
+		if ( ! is_string( $shop_json ) ) {
+			$shop_json = '""';
+		}
 
 		$template = <<<'JS'
+const MAX_PROXY_TIMESTAMP_SKEW_SECONDS = 300;
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -2602,20 +2627,66 @@ export default {
     const defaultClientId = __DEFAULT_CLIENT_ID__;
     const defaultIssuer = __DEFAULT_ISSUER__;
     const defaultCompanyId = __DEFAULT_COMPANY_ID__;
+    const defaultShop = __DEFAULT_SHOP__;
+
+    // Optional health endpoint.
+    if (url.pathname === "/health") {
+      return jsonResponse({
+        ok: true,
+        service: "portal-bridge-worker"
+      });
+    }
+
+    // Debug endpoint without exposing secrets.
+    if (url.pathname === "/debug-shopify-config") {
+      const rawShop = env.SHOPIFY_SHOP_NAME || defaultShop || "";
+      const cleanShop = rawShop ? normalizeShopDomain(rawShop) : "";
+      return jsonResponse({
+        ok: true,
+        rawShop,
+        cleanShop,
+        hasClientSecret: Boolean(env.SHOPIFY_CLIENT_SECRET),
+        hasJwtSecret: Boolean(env.WP_JWT_SECRET),
+        hasIssuer: Boolean(env.WP_ISSUER || defaultIssuer),
+        hasAudience: Boolean(env.WP_AUDIENCE || defaultClientId)
+      });
+    }
+
+    // Verify Shopify app proxy signature before trusting forwarded params.
+    const proxyVerification = await verifyShopifyAppProxyRequest(
+      url,
+      env.SHOPIFY_CLIENT_SECRET,
+      env.SHOPIFY_SHOP_NAME || defaultShop || ""
+    );
+    if (!proxyVerification.ok) {
+      return new Response(proxyVerification.error, { status: 403 });
+    }
 
     const intake = url.searchParams.get("intake") || url.searchParams.get("return_url") || defaultIntake;
     const dest = url.searchParams.get("dest") || defaultDest;
     const clientId = url.searchParams.get("client_id") || env.WP_AUDIENCE || defaultClientId;
+    const handoffState = url.searchParams.get("state") || "";
     const shopifyCustomerId = url.searchParams.get("logged_in_customer_id");
     const customerEmail = url.searchParams.get("logged_in_customer_email") || "";
 
     if (!intake) return new Response("Missing intake/return_url", { status: 400 });
+    if (!handoffState) return new Response("Missing state from WordPress launch", { status: 400 });
     if (!shopifyCustomerId) return new Response("Shopify customer not logged in storefront", { status: 401 });
     if (!env.WP_JWT_SECRET) return new Response("Missing WP_JWT_SECRET", { status: 500 });
     if (!clientId) return new Response("Missing client_id / WP_AUDIENCE", { status: 400 });
 
     const issuer = env.WP_ISSUER || defaultIssuer;
     if (!issuer) return new Response("Missing WP_ISSUER", { status: 500 });
+
+    let intakeUrl;
+    try {
+      intakeUrl = new URL(intake);
+      if (intakeUrl.protocol !== "https:" && intakeUrl.protocol !== "http:") {
+        return new Response("Invalid intake protocol", { status: 400 });
+      }
+    } catch {
+      return new Response("Invalid intake URL", { status: 400 });
+    }
 
     const now = Math.floor(Date.now() / 1000);
     const claims = {
@@ -2628,18 +2699,183 @@ export default {
       shopify_customer_id: String(shopifyCustomerId),
       company_id: env.COMPANY_ID || defaultCompanyId || "default",
       dest,
-      email: customerEmail
+      email: customerEmail,
+      state: handoffState
     };
 
     const token = await signJwtHS256(claims, env.WP_JWT_SECRET);
 
-    const intakeUrl = new URL(intake);
-    intakeUrl.searchParams.set("action", "pib_auth_intake");
-    intakeUrl.searchParams.set("token", token);
+    if (!intakeUrl.searchParams.get("action")) {
+      intakeUrl.searchParams.set("action", "pib_auth_intake");
+    }
 
-    return Response.redirect(intakeUrl.toString(), 302);
+    return new Response(renderPostRedirect(intakeUrl.toString(), token, handoffState), {
+      status: 200,
+      headers: {
+        "content-type": "text/html; charset=UTF-8",
+        "cache-control": "no-store"
+      }
+    });
   }
 };
+
+async function verifyShopifyAppProxyRequest(url, sharedSecret, expectedShopDomain = "") {
+  if (!sharedSecret) {
+    return { ok: false, error: "Missing SHOPIFY_CLIENT_SECRET" };
+  }
+
+  const signature = (url.searchParams.get("signature") || "").toLowerCase();
+  const shop = (url.searchParams.get("shop") || "").trim();
+  const timestampRaw = url.searchParams.get("timestamp") || "";
+
+  if (!signature || !/^[a-f0-9]{64}$/.test(signature)) {
+    return { ok: false, error: "Missing or invalid app proxy signature" };
+  }
+
+  if (!shop || !shop.endsWith(".myshopify.com")) {
+    return { ok: false, error: "Missing or invalid shop domain" };
+  }
+
+  if (expectedShopDomain) {
+    const normalizedExpected = normalizeShopDomain(expectedShopDomain);
+    if (shop.toLowerCase() !== normalizedExpected.toLowerCase()) {
+      return { ok: false, error: "Unexpected shop domain" };
+    }
+  }
+
+  const timestamp = Number(timestampRaw);
+  if (!Number.isFinite(timestamp)) {
+    return { ok: false, error: "Invalid app proxy timestamp" };
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSec - timestamp) > MAX_PROXY_TIMESTAMP_SKEW_SECONDS) {
+    return { ok: false, error: "Stale app proxy request" };
+  }
+
+  // Canonical payload:
+  // - remove "signature"
+  // - for duplicate keys, join values by comma
+  // - sort key=value fragments
+  // - concatenate with no delimiter
+  const grouped = new Map();
+  for (const [key, value] of url.searchParams.entries()) {
+    if (key === "signature") continue;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(value);
+  }
+
+  const signedPayload = [...grouped.entries()]
+    .map(([key, values]) => `${key}=${values.join(",")}`)
+    .sort()
+    .join("");
+
+  const expectedSignature = await hmacSha256Hex(sharedSecret, signedPayload);
+  const signaturesMatch = await timingSafeEqualText(signature, expectedSignature);
+  if (!signaturesMatch) {
+    return { ok: false, error: "Invalid app proxy signature" };
+  }
+
+  return { ok: true };
+}
+
+async function hmacSha256Hex(secret, message) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(message));
+  const bytes = new Uint8Array(sig);
+  let hex = "";
+  for (let i = 0; i < bytes.length; i++) {
+    hex += bytes[i].toString(16).padStart(2, "0");
+  }
+  return hex;
+}
+
+async function timingSafeEqualText(a, b) {
+  const enc = new TextEncoder();
+  const [aHash, bHash] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(String(a))),
+    crypto.subtle.digest("SHA-256", enc.encode(String(b)))
+  ]);
+
+  const aBytes = new Uint8Array(aHash);
+  const bBytes = new Uint8Array(bHash);
+
+  if (typeof crypto.subtle.timingSafeEqual === "function") {
+    return crypto.subtle.timingSafeEqual(aBytes, bBytes);
+  }
+
+  let diff = 0;
+  for (let i = 0; i < aBytes.length; i++) {
+    diff |= aBytes[i] ^ bBytes[i];
+  }
+  return diff === 0;
+}
+
+function jsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "access-control-allow-origin": "*"
+    }
+  });
+}
+
+function normalizeShopDomain(value) {
+  if (!value) {
+    throw new Error("Missing Shopify shop name/domain");
+  }
+
+  let shop = String(value).trim();
+  shop = shop.replace(/^https?:\/\//, "");
+  shop = shop.replace(/\/.*$/, "");
+
+  if (!shop.endsWith(".myshopify.com")) {
+    shop = `${shop}.myshopify.com`;
+  }
+
+  return shop;
+}
+
+function renderPostRedirect(intakeUrl, token, state) {
+  const target = escapeHtml(intakeUrl);
+  const safeToken = escapeHtml(token);
+  const safeState = escapeHtml(state);
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="robots" content="noindex,nofollow" />
+    <title>Portal Bridge Redirect</title>
+  </head>
+  <body>
+    <form id="pib-intake-post" method="post" action="${target}">
+      <input type="hidden" name="token" value="${safeToken}" />
+      <input type="hidden" name="state" value="${safeState}" />
+      <noscript><button type="submit">Continue</button></noscript>
+    </form>
+    <script>document.getElementById("pib-intake-post").submit();</script>
+  </body>
+</html>`;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
 
 async function signJwtHS256(payload, secret) {
   const enc = new TextEncoder();
@@ -2678,6 +2914,7 @@ JS;
 				'__DEFAULT_CLIENT_ID__'  => $client_json,
 				'__DEFAULT_ISSUER__'     => $issuer_json,
 				'__DEFAULT_COMPANY_ID__' => $company_json,
+				'__DEFAULT_SHOP__'       => $shop_json,
 			)
 		);
 	}
@@ -2706,6 +2943,7 @@ JS;
 				'intake'     => PIB_Plugin::intake_url(),
 				'dest'       => isset( $settings['default_destination'] ) ? (string) $settings['default_destination'] : '/dashboard',
 				'client_id'  => $client_id,
+				'state'      => 'wp_launch_state',
 				'source'     => 'partner_portal',
 			),
 			$shopify_url
@@ -2716,6 +2954,7 @@ JS;
 Manual bridge launch button (optional).
 Place in a Shopify theme/account template only for testing.
 Production flows should generally redirect automatically from your app route.
+Replace `state=wp_launch_state` with a real launch state if your route does not overwrite it.
 {%- endcomment -%}
 <a class="button" href="__LAUNCH_URL__">Open Partner Portal</a>
 LIQUID;

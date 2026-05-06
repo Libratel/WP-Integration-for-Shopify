@@ -172,9 +172,9 @@ final class PIB_Spark_Launch {
 	 */
 	private function redirect_to_failure( $error_code ) {
 		$settings = $this->plugin->get_settings();
-		$fallback = PIB_Destination::sanitize_destination(
-			(string) $settings['failure_destination'],
-			'/'
+		$fallback = PIB_Destination::safe_failure_destination(
+			isset( $settings['failure_destination'] ) ? (string) $settings['failure_destination'] : '',
+			'/portal-login'
 		);
 
 		$url = add_query_arg(

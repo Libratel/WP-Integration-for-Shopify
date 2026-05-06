@@ -568,7 +568,7 @@ final class PIB_Admin_Tools {
 
 		$map = array(
 			'pib_missing_token' => array(
-				'text'  => 'No JWT handoff token reached intake. Ensure Shopify bridge route mints a token and redirects to WordPress intake with `token=...`.',
+				'text'  => 'No JWT handoff token reached intake. Ensure Shopify bridge route mints a token and submits it to WordPress intake (POST recommended; legacy query transport is optional).',
 				'links' => array(
 					'Token Check'  => $token_check_url,
 					'Bridge Contract' => $bridge_contract_url,
@@ -713,6 +713,25 @@ final class PIB_Admin_Tools {
 				'links' => array(
 					'Bridge Setup' => $bridge_setup_url,
 					'Token Check' => $token_check_url,
+				),
+			),
+			'pib_missing_state' => array(
+				'text'  => 'Handoff state is missing. Ensure sign-in launches include a state value and the token-minting route returns it to intake.',
+				'links' => array(
+					'Bridge Contract' => $bridge_contract_url,
+					'Bridge Setup' => $bridge_setup_url,
+				),
+			),
+			'pib_invalid_state_binding' => array(
+				'text'  => 'Handoff state did not match the originating browser context. Restart sign-in and avoid cross-browser handoff links.',
+				'links' => array(
+					'Bridge Setup' => $bridge_setup_url,
+				),
+			),
+			'pib_state_replay' => array(
+				'text'  => 'Handoff state is invalid or already consumed. Ensure each launch uses a fresh state and token round-trip.',
+				'links' => array(
+					'Bridge Contract' => $bridge_contract_url,
 				),
 			),
 			'pib_auth_rate_limited' => array(

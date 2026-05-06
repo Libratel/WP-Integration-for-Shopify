@@ -3,9 +3,9 @@
  * Auth intake endpoint.
  *
  * JWT handoff flow:
- * Shopify/app side redirects back to this endpoint with:
+ * Shopify/app side posts to this endpoint with:
  * - token (required)
- * - state (optional)
+ * - state (required when handoff state verification is enabled)
  *
  * @package PortalIdentityBridge
  */
@@ -76,7 +76,10 @@ final class PIB_Auth_Intake {
 			$this->fail_and_exit( 'pib_auth_rate_limited', 'Too many failed attempts. Please try again later.', 429, $settings );
 		}
 
-		$token = $this->request_scalar_text( 'token' );
+		$token = $this->request_scalar_text( 'token', 'post' );
+		if ( '' === $token && ! empty( $settings['allow_token_query_fallback'] ) ) {
+			$token = $this->request_scalar_text( 'token', 'query' );
+		}
 		$state = $this->request_scalar_text( 'state' ); // Optional. Reserved for future/state correlation.
 
 		if ( '' === $token ) {
@@ -155,6 +158,23 @@ final class PIB_Auth_Intake {
 				$settings,
 				$verified_claims
 			);
+		}
+
+		$require_state = ! empty( $settings['require_handoff_state'] );
+		if ( $require_state && '' === $state ) {
+			$this->fail_and_exit( 'pib_missing_state', 'Missing handoff state.', 403, $settings, $verified_claims );
+		}
+		if ( $require_state && '' !== $state ) {
+			$state_result = PIB_Security::consume_handoff_state( $state );
+			if ( is_wp_error( $state_result ) ) {
+				$this->fail_and_exit(
+					$state_result->get_error_code(),
+					$state_result->get_error_message(),
+					403,
+					$settings,
+					$verified_claims
+				);
+			}
 		}
 
 		// Optional state verification hook.
@@ -252,15 +272,23 @@ final class PIB_Auth_Intake {
 	/**
 	 * Get a scalar request value sanitized as text.
 	 *
-	 * @param string $key Request key.
+	 * @param string $key    Request key.
+	 * @param string $source Source scope: request, post, query.
 	 * @return string
 	 */
-	private function request_scalar_text( $key ) {
-		if ( ! isset( $_REQUEST[ $key ] ) || ! is_scalar( $_REQUEST[ $key ] ) ) {
+	private function request_scalar_text( $key, $source = 'request' ) {
+		$bucket = $_REQUEST;
+		if ( 'post' === $source ) {
+			$bucket = $_POST;
+		} elseif ( 'query' === $source ) {
+			$bucket = $_GET;
+		}
+
+		if ( ! isset( $bucket[ $key ] ) || ! is_scalar( $bucket[ $key ] ) ) {
 			return '';
 		}
 
-		return sanitize_text_field( wp_unslash( (string) $_REQUEST[ $key ] ) );
+		return sanitize_text_field( wp_unslash( (string) $bucket[ $key ] ) );
 	}
 
 	/**
@@ -277,9 +305,9 @@ final class PIB_Auth_Intake {
 		PIB_Security::register_auth_failure( (int) $settings['auth_failure_window_minutes'] );
 		do_action( 'pib_auth_intake_failure', $code, $message, $status, $claims );
 
-		$failure_destination = PIB_Destination::sanitize_destination(
-			(string) $settings['failure_destination'],
-			'/'
+		$failure_destination = PIB_Destination::safe_failure_destination(
+			isset( $settings['failure_destination'] ) ? (string) $settings['failure_destination'] : '',
+			'/portal-login'
 		);
 
 		$redirect_url = PIB_Destination::to_absolute_url( $failure_destination );

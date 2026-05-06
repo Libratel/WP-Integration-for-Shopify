@@ -384,9 +384,9 @@ final class PIB_Session_Policy {
 		wp_logout();
 
 		$settings = $this->plugin->get_settings();
-		$dest     = PIB_Destination::sanitize_destination(
-			(string) $settings['failure_destination'],
-			'/'
+		$dest     = PIB_Destination::safe_failure_destination(
+			isset( $settings['failure_destination'] ) ? (string) $settings['failure_destination'] : '',
+			'/portal-login'
 		);
 
 		$url = add_query_arg(
@@ -504,9 +504,9 @@ final class PIB_Session_Policy {
 	 * @return string
 	 */
 	private function logged_out_redirect_url( $settings ) {
-		$dest = PIB_Destination::sanitize_destination(
-			isset( $settings['failure_destination'] ) ? (string) $settings['failure_destination'] : '/',
-			'/'
+		$dest = PIB_Destination::safe_failure_destination(
+			isset( $settings['failure_destination'] ) ? (string) $settings['failure_destination'] : '',
+			'/portal-login'
 		);
 
 		return add_query_arg(
