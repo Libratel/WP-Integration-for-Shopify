@@ -211,7 +211,7 @@ final class PIB_Bridge_Simulator {
 	}
 
 	/**
-	 * Redirect back to Tools > Advanced Bridge Simulator with a notice code.
+	 * Redirect back to Tools > Observability > Bridge Simulator with a notice code.
 	 *
 	 * @param string $code Notice code.
 	 * @return void
@@ -220,7 +220,7 @@ final class PIB_Bridge_Simulator {
 		$redirect = add_query_arg(
 			array(
 				'page'                => 'pib-tools',
-				'tab'                 => 'advanced',
+				'tab'                 => 'observability',
 				'panel'               => 'bridge_simulator',
 				'pib_bridge_notice'   => sanitize_key( (string) $code ),
 				'pib_bridge_notice_type' => 'error',

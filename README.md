@@ -114,12 +114,12 @@ Extensibility hooks:
 - Route matching now goes through `PIB_Protected_Route_Policy` for both runtime enforcement and admin diagnostics.
 - Protected access supports explicit unprotected prefixes (`Unprotected Route Prefixes`) to keep login/failure routes reachable.
 - Route validation now flags misconfigurations such as protected failure destinations and global unprotected `/`.
-- Admin tools include `Route Access` tab with:
-  - route access assistant summary with direct fix links
-  - effective policy inputs (prefixes, destination posture, session/mapping gate mode)
-  - risk checks (`Action Needed`, `Warning`, `OK`)
+- Admin tools include `Observability > Route Access` with:
+  - route access assistant summary + direct fix links
+  - risk cards (`Action Needed`, `Warning`, `OK`)
+  - risk checks table with actionable next steps
   - destination tester with expected visitor behavior
-  - sample route matrix with behavior outcomes
+  - collapsible policy inputs + sample route matrix
 
 ## Extensibility (Prompt 5)
 
@@ -134,6 +134,9 @@ Extensibility hooks:
   - `pib_portal_modules`
   - `pib_portal_module_card_markup`
   - `pib_portal_dashboard_markup`
+- Optional module definition key:
+  - `contexts` (array of context keys; empty means all contexts)
+    - common contexts: `portal_dashboard`, `admin_tools`, `settings_diagnostics`
 
 ## Operational Health (Prompt 6)
 
@@ -143,11 +146,11 @@ Extensibility hooks:
   - cron retention schedule
   - required module registration/boot state
   - mapping population trends
-  - auth success/failure signal in the last 24 hours
-- Admin tools now include a `Health` tab with:
+  - auth activity and success/failure signal in the last 24 hours
+- Admin tools now include `Observability > Health` with:
   - overall status (`Healthy`, `Warnings`, `Action Needed`)
-  - check summary counters
-  - detailed check matrix
+  - check summary cards and 24h runtime signals
+  - detailed check matrix with direct action links
   - read-only snapshot preview
   - one-click snapshot download (`JSON`)
 - New extension hooks:
@@ -199,6 +202,8 @@ Optional/used in Phase 5:
 - `wp_user_id` (optional explicit user hint)
 - `email` (recommended; used for auto-link/auto-create and ongoing WP email sync)
 - `customer_email` (alias accepted when `email` is not present)
+- `email_verified` (optional trusted boolean for seamless first-time activation)
+- `email_verification_source` (optional; use `shopify_admin` when verification came from Shopify Admin lookup)
 
 Mapping guardrails:
 
@@ -265,6 +270,8 @@ Unique key: `(shopify_customer_id, company_id)`
 - `Unprotected Route Prefixes`
 - `Auto-create WordPress Users`
 - `Auto-link Existing Users by Email`
+- `Require Email Verification for First-Time Users`
+- `Auto-Activate First-Time Users From Verified Shopify Claim`
 - `New User Role`
 - `Require Active Mapping on Protected Routes`
 - `Require Managed Session on Protected Routes`
@@ -382,7 +389,7 @@ Logout/session strategy:
   - required JWT claims and expected values (`iss`, `aud`, `exp`, `jti`, `shopify_customer_id`, `company_id`, `dest`, `state`)
   - implementation wiring map (what to configure in WordPress, Shopify App Proxy, and token-minting endpoint)
   - copy/paste Cloudflare Worker token-minting script prefilled from current WP settings
-  - required worker environment variable matrix (`WP_JWT_SECRET`, `WP_ISSUER`, `WP_AUDIENCE`, `COMPANY_ID`)
+  - required worker environment variable matrix (`WP_JWT_SECRET`, `WP_ISSUER`, `WP_AUDIENCE`, `COMPANY_ID`, plus Shopify lookup vars for seamless first-time activation)
   - optional Shopify theme button snippet for manual launch testing
 - Outbound sign-in URL now includes: `return_url`, `intake`, `dest`, `client_id`, `state`, and `source=partner_portal`.
 
@@ -424,6 +431,7 @@ Expected implementation flow in Shopify app route:
    - `dest` (must match allowed destination prefixes)
    - `state` (must mirror inbound launch `state`)
    - `email` (recommended for first-time auto-link/auto-create and identity sync)
+   - `email_verified` + `email_verification_source=shopify_admin` (optional trusted signal for seamless first-time activation)
 5. Return an auto-submit HTML form that POSTs to WordPress intake with:
    - `token=<jwt>`
    - `state=<state>`

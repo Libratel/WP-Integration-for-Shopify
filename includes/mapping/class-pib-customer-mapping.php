@@ -19,6 +19,26 @@ final class PIB_Customer_Mapping {
 	const META_ACTIVE_MAPPING_ID = 'pib_active_mapping_id';
 
 	/**
+	 * Mapping status: active.
+	 */
+	const STATUS_ACTIVE = 'active';
+
+	/**
+	 * Mapping status: blocked.
+	 */
+	const STATUS_BLOCKED = 'blocked';
+
+	/**
+	 * Mapping status: archived.
+	 */
+	const STATUS_ARCHIVED = 'archived';
+
+	/**
+	 * Mapping status: awaiting first-time email verification.
+	 */
+	const STATUS_PENDING_VERIFICATION = 'pending_verification';
+
+	/**
 	 * Singleton.
 	 *
 	 * @var PIB_Customer_Mapping|null
@@ -142,7 +162,7 @@ final class PIB_Customer_Mapping {
 	 * @param WP_User|false         $resolved_user Existing resolved user from prior logic.
 	 * @param array<string, mixed>  $claims        Verified token claims.
 	 *
-	 * @return WP_User|false
+	 * @return WP_User|WP_Error|false
 	 */
 	public function resolve_user_from_claims( $resolved_user, $claims ) {
 		$settings            = $this->plugin->get_settings();
@@ -150,6 +170,7 @@ final class PIB_Customer_Mapping {
 		$company_id          = self::company_id_from_claims( $claims );
 		$email               = self::email_from_claims( $claims );
 		$resolution_action   = 'upsert';
+		$verification_mode   = ! empty( $settings['first_time_verification_enabled'] );
 
 		if ( '' === $shopify_customer_id ) {
 			return $resolved_user;
@@ -158,7 +179,36 @@ final class PIB_Customer_Mapping {
 		$mapping = $this->find_by_customer_company( $shopify_customer_id, $company_id );
 		if ( $mapping ) {
 			$status = isset( $mapping['status'] ) ? sanitize_key( (string) $mapping['status'] ) : '';
-			if ( 'active' !== $status ) {
+			if ( self::STATUS_PENDING_VERIFICATION === $status ) {
+				if ( ! $verification_mode ) {
+					$this->update_mapping(
+						absint( $mapping['id'] ),
+						array(
+							'status' => self::STATUS_ACTIVE,
+						)
+					);
+					$mapping = $this->find_by_customer_company( $shopify_customer_id, $company_id );
+					$status  = isset( $mapping['status'] ) ? sanitize_key( (string) $mapping['status'] ) : '';
+				} else {
+					if ( $this->should_auto_activate_first_time_mapping( $claims, $settings ) ) {
+						$this->update_mapping(
+							absint( $mapping['id'] ),
+							array(
+								'status' => self::STATUS_ACTIVE,
+							)
+						);
+						$mapping = $this->find_by_customer_company( $shopify_customer_id, $company_id );
+						$status  = isset( $mapping['status'] ) ? sanitize_key( (string) $mapping['status'] ) : '';
+					} else {
+						$verification_result = $this->ensure_pending_verification( $mapping, $claims );
+						if ( is_wp_error( $verification_result ) ) {
+							return $verification_result;
+						}
+					}
+				}
+			}
+
+			if ( self::STATUS_ACTIVE !== $status ) {
 				$this->emit_mapping_resolution_denied(
 					'mapping_not_active',
 					array(
@@ -267,11 +317,50 @@ final class PIB_Customer_Mapping {
 			return false;
 		}
 
+		if ( $verification_mode && ! $mapping ) {
+			$auto_activate_first_time = $this->should_auto_activate_first_time_mapping( $claims, $settings );
+			$mapping_id = $this->upsert_mapping(
+				$shopify_customer_id,
+				$company_id,
+				$user->ID,
+				$email,
+				$auto_activate_first_time ? self::STATUS_ACTIVE : self::STATUS_PENDING_VERIFICATION
+			);
+
+			if ( $mapping_id <= 0 ) {
+				$this->emit_mapping_resolution_denied(
+					'mapping_upsert_failed',
+					array(
+						'user_id'             => $user->ID,
+						'shopify_customer_id' => $shopify_customer_id,
+						'company_id'          => $company_id,
+					)
+				);
+				return false;
+			}
+
+			$pending_mapping = $this->find_by_id( $mapping_id );
+			if ( ! $pending_mapping ) {
+				return new WP_Error(
+					'pib_email_verification_send_failed',
+					'Unable to begin first-time verification for this identity.'
+				);
+			}
+
+			if ( ! $auto_activate_first_time ) {
+				$verification_result = $this->ensure_pending_verification( $pending_mapping, $claims );
+				if ( is_wp_error( $verification_result ) ) {
+					return $verification_result;
+				}
+			}
+		}
+
 		$mapping_id = $this->upsert_mapping(
 			$shopify_customer_id,
 			$company_id,
 			$user->ID,
-			$email
+			$email,
+			self::STATUS_ACTIVE
 		);
 
 		if ( $mapping_id <= 0 ) {
@@ -293,6 +382,120 @@ final class PIB_Customer_Mapping {
 		}
 
 		return $user;
+	}
+
+	/**
+	 * Decide whether first-time mapping can activate without email-link click.
+	 *
+	 * @param array<string, mixed> $claims   Claims payload.
+	 * @param array<string, mixed> $settings Plugin settings.
+	 *
+	 * @return bool
+	 */
+	private function should_auto_activate_first_time_mapping( $claims, $settings ) {
+		$claims   = is_array( $claims ) ? $claims : array();
+		$settings = is_array( $settings ) ? $settings : array();
+
+		if ( empty( $settings['first_time_verification_enabled'] ) ) {
+			return true;
+		}
+
+		if ( empty( $settings['first_time_auto_activate_from_verified_claim'] ) ) {
+			return false;
+		}
+
+		return $this->claims_include_trusted_verified_email( $claims );
+	}
+
+	/**
+	 * Check whether claims contain trusted Shopify verified-email proof.
+	 *
+	 * @param array<string, mixed> $claims Claims payload.
+	 *
+	 * @return bool
+	 */
+	private function claims_include_trusted_verified_email( $claims ) {
+		$claims = is_array( $claims ) ? $claims : array();
+		$email  = self::email_from_claims( $claims );
+		if ( '' === $email ) {
+			return false;
+		}
+
+		$source = isset( $claims['email_verification_source'] ) && is_scalar( $claims['email_verification_source'] )
+			? sanitize_key( (string) $claims['email_verification_source'] )
+			: '';
+		if ( 'shopify_admin' !== $source ) {
+			return false;
+		}
+
+		if ( ! array_key_exists( 'email_verified', $claims ) ) {
+			return false;
+		}
+
+		$verified = $claims['email_verified'];
+		if ( is_bool( $verified ) ) {
+			return $verified;
+		}
+		if ( is_numeric( $verified ) ) {
+			return 1 === absint( $verified );
+		}
+		if ( is_string( $verified ) ) {
+			return in_array( strtolower( trim( $verified ) ), array( '1', 'true', 'yes' ), true );
+		}
+
+		return false;
+	}
+
+	/**
+	 * Trigger/refresh pending verification challenge and return intake error.
+	 *
+	 * @param array<string, mixed> $mapping Mapping row.
+	 * @param array<string, mixed> $claims  Claims payload.
+	 *
+	 * @return WP_Error
+	 */
+	private function ensure_pending_verification( $mapping, $claims ) {
+		$mapping = is_array( $mapping ) ? $mapping : array();
+		$claims  = is_array( $claims ) ? $claims : array();
+
+		$verifier = PIB_Registration_Verifier::instance( $this->plugin );
+		if ( ! $verifier instanceof PIB_Registration_Verifier ) {
+			return new WP_Error(
+				'pib_email_verification_send_failed',
+				'Verification module is unavailable.'
+			);
+		}
+
+		$result = $verifier->ensure_verification_challenge( $mapping, $claims );
+		if ( is_wp_error( $result ) ) {
+			$this->emit_mapping_resolution_denied(
+				$result->get_error_code(),
+				array(
+					'mapping_id'          => isset( $mapping['id'] ) ? absint( $mapping['id'] ) : 0,
+					'user_id'             => isset( $mapping['wp_user_id'] ) ? absint( $mapping['wp_user_id'] ) : 0,
+					'shopify_customer_id' => isset( $mapping['shopify_customer_id'] ) ? (string) $mapping['shopify_customer_id'] : '',
+					'company_id'          => isset( $mapping['company_id'] ) ? (string) $mapping['company_id'] : '',
+					'email'               => isset( $mapping['email'] ) ? (string) $mapping['email'] : '',
+				)
+			);
+			return $result;
+		}
+
+		$this->emit_mapping_resolution_denied(
+			'pib_email_verification_required',
+			array(
+				'mapping_id'          => isset( $mapping['id'] ) ? absint( $mapping['id'] ) : 0,
+				'user_id'             => isset( $mapping['wp_user_id'] ) ? absint( $mapping['wp_user_id'] ) : 0,
+				'shopify_customer_id' => isset( $mapping['shopify_customer_id'] ) ? (string) $mapping['shopify_customer_id'] : '',
+				'company_id'          => isset( $mapping['company_id'] ) ? (string) $mapping['company_id'] : '',
+				'email'               => isset( $mapping['email'] ) ? (string) $mapping['email'] : '',
+			)
+		);
+
+		return new WP_Error(
+			'pib_email_verification_required',
+			'Check your email to verify first-time portal access.'
+		);
 	}
 
 	/**
@@ -347,7 +550,7 @@ final class PIB_Customer_Mapping {
 			$wpdb->prepare(
 				"SELECT COUNT(*) FROM {$table} WHERE wp_user_id = %d AND status = %s AND shopify_customer_id <> %s",
 				$wp_user_id,
-				'active',
+				self::STATUS_ACTIVE,
 				$shopify_customer_id
 			)
 		);
@@ -405,7 +608,7 @@ final class PIB_Customer_Mapping {
 			return null;
 		}
 
-		if ( 'active' !== (string) $mapping['status'] ) {
+		if ( self::STATUS_ACTIVE !== (string) $mapping['status'] ) {
 			$this->identity_context_cache[ $user_id ] = null;
 			return null;
 		}
@@ -569,7 +772,7 @@ final class PIB_Customer_Mapping {
 	 *
 	 * @return array<string, mixed>|WP_Error
 	 */
-	public function admin_upsert_mapping( $shopify_customer_id, $company_id, $wp_user_id, $email = '', $status = 'active' ) {
+	public function admin_upsert_mapping( $shopify_customer_id, $company_id, $wp_user_id, $email = '', $status = self::STATUS_ACTIVE ) {
 		$shopify_customer_id = trim( sanitize_text_field( (string) $shopify_customer_id ) );
 		$company_id          = trim( sanitize_text_field( (string) $company_id ) );
 		$wp_user_id          = absint( $wp_user_id );
@@ -606,10 +809,10 @@ final class PIB_Customer_Mapping {
 			return new WP_Error( 'pib_admin_mapping_upsert_failed', 'Unable to create or update mapping record.' );
 		}
 
-		if ( ! in_array( $status, array( 'active', 'blocked', 'archived' ), true ) ) {
-			$status = 'active';
+		if ( ! in_array( $status, $this->allowed_statuses(), true ) ) {
+			$status = self::STATUS_ACTIVE;
 		}
-		if ( 'active' !== $status ) {
+		if ( self::STATUS_ACTIVE !== $status ) {
 			$this->update_mapping(
 				$mapping_id,
 				array(
@@ -623,7 +826,7 @@ final class PIB_Customer_Mapping {
 			return new WP_Error( 'pib_admin_mapping_missing', 'Mapping record could not be loaded after update.' );
 		}
 
-		if ( 'active' === $status ) {
+		if ( self::STATUS_ACTIVE === $status ) {
 			do_action( 'pib_mapping_upsert', $mapping, 'admin_upsert' );
 		}
 
@@ -651,7 +854,7 @@ final class PIB_Customer_Mapping {
 
 		if ( isset( $fields['status'] ) ) {
 			$status = sanitize_key( (string) $fields['status'] );
-			if ( in_array( $status, array( 'active', 'blocked', 'archived' ), true ) ) {
+			if ( in_array( $status, $this->allowed_statuses(), true ) ) {
 				$data['status'] = $status;
 				$format[]       = '%s';
 			}
@@ -692,10 +895,30 @@ final class PIB_Customer_Mapping {
 
 		$mapping = $this->find_by_id( $mapping_id );
 		if ( $mapping ) {
+			if ( self::STATUS_ACTIVE === (string) $mapping['status'] ) {
+				$this->set_active_mapping_for_user(
+					isset( $mapping['wp_user_id'] ) ? absint( $mapping['wp_user_id'] ) : 0,
+					$mapping_id
+				);
+			}
 			do_action( 'pib_mapping_upsert', $mapping, 'admin_update' );
 		}
 
 		return true;
+	}
+
+	/**
+	 * Return allowed mapping status values.
+	 *
+	 * @return array<int, string>
+	 */
+	private function allowed_statuses() {
+		return array(
+			self::STATUS_ACTIVE,
+			self::STATUS_BLOCKED,
+			self::STATUS_ARCHIVED,
+			self::STATUS_PENDING_VERIFICATION,
+		);
 	}
 
 	/**
@@ -763,16 +986,21 @@ final class PIB_Customer_Mapping {
 	 * @param string $company_id          Company/account ID.
 	 * @param int    $wp_user_id          WordPress user ID.
 	 * @param string $email               Email.
+	 * @param string $insert_status       Status used for new rows.
 	 *
 	 * @return int
 	 */
-	private function upsert_mapping( $shopify_customer_id, $company_id, $wp_user_id, $email ) {
+	private function upsert_mapping( $shopify_customer_id, $company_id, $wp_user_id, $email, $insert_status = self::STATUS_ACTIVE ) {
 		global $wpdb;
 
 		$shopify_customer_id = trim( (string) $shopify_customer_id );
 		$company_id          = trim( (string) $company_id );
 		$wp_user_id          = absint( $wp_user_id );
 		$email               = sanitize_email( (string) $email );
+		$insert_status       = sanitize_key( (string) $insert_status );
+		if ( ! in_array( $insert_status, $this->allowed_statuses(), true ) ) {
+			$insert_status = self::STATUS_ACTIVE;
+		}
 
 		if ( '' === $shopify_customer_id || $wp_user_id <= 0 ) {
 			return 0;
@@ -792,7 +1020,7 @@ final class PIB_Customer_Mapping {
 				updated_at,
 				last_seen_at
 			)
-			VALUES (%s, %s, %d, %s, 'active', %s, %s, %s)
+			VALUES (%s, %s, %d, %s, %s, %s, %s, %s)
 			ON DUPLICATE KEY UPDATE
 				wp_user_id = VALUES(wp_user_id),
 				email = VALUES(email),
@@ -807,6 +1035,7 @@ final class PIB_Customer_Mapping {
 				$company_id,
 				$wp_user_id,
 				$email,
+				$insert_status,
 				$now,
 				$now,
 				$now

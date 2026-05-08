@@ -111,6 +111,7 @@ final class PIB_Spark_Launch {
 		if ( ! isset( $_GET['pib_launch'] ) ) {
 			return;
 		}
+		nocache_headers();
 
 		$settings = $this->plugin->get_settings();
 		if ( empty( $settings['spark_launch_enabled'] ) ) {
@@ -127,6 +128,10 @@ final class PIB_Spark_Launch {
 		}
 
 		if ( is_user_logged_in() ) {
+			if ( ! empty( $settings['require_managed_session_for_protected_routes'] ) && ! PIB_Session_Policy::is_current_session_managed() ) {
+				$this->redirect_to_shopify_signin( $dest );
+			}
+
 			if ( ! empty( $settings['require_active_mapping'] ) ) {
 				$identity = PIB_Authorization::current_identity();
 				if ( ! is_array( $identity ) || empty( $identity['shopify_customer_id'] ) ) {
@@ -159,6 +164,7 @@ final class PIB_Spark_Launch {
 			$this->redirect_to_failure( 'pib_signin_url_unavailable' );
 		}
 
+		nocache_headers();
 		wp_safe_redirect( $signin_url );
 		exit;
 	}
@@ -184,6 +190,7 @@ final class PIB_Spark_Launch {
 			PIB_Destination::to_absolute_url( $fallback )
 		);
 
+		nocache_headers();
 		wp_safe_redirect( $url );
 		exit;
 	}

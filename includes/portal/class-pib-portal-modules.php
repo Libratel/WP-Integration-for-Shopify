@@ -182,9 +182,12 @@ final class PIB_Portal_Modules {
 			if ( ! empty( $module['enabled_callback'] ) && is_callable( $module['enabled_callback'] ) ) {
 				$enabled = (bool) call_user_func( $module['enabled_callback'], $module, $settings, $user_id, $identity );
 			}
+			$context_allowed = empty( $module['contexts'] ) || in_array( $context, (array) $module['contexts'], true );
 
 			$hidden_reason = '';
-			if ( ! $enabled ) {
+			if ( ! $context_allowed ) {
+				$hidden_reason = 'context_not_enabled';
+			} elseif ( ! $enabled ) {
 				$hidden_reason = 'disabled';
 			} elseif ( ! $allowed ) {
 				$hidden_reason = 'destination_not_allowed';
@@ -199,6 +202,7 @@ final class PIB_Portal_Modules {
 			$module['is_available']           = '' === $hidden_reason;
 			$module['hidden_reason']          = $hidden_reason;
 			$module['destination_allowed']    = $allowed;
+			$module['context_allowed']        = $context_allowed;
 			$module['route_is_protected']     = is_array( $route_policy ) ? ! empty( $route_policy['is_protected'] ) : false;
 			$module['route_policy']           = is_array( $route_policy ) ? $route_policy : array();
 			$module['context']                = $context;
@@ -445,6 +449,7 @@ final class PIB_Portal_Modules {
 				'enabled_callback'  => null,
 				'requires_auth'     => true,
 				'requires_identity' => false,
+				'contexts'          => array(),
 				'render_callback'   => null,
 			)
 		);
@@ -461,6 +466,21 @@ final class PIB_Portal_Modules {
 		$definition['enabled']     = ! empty( $definition['enabled'] );
 		$definition['requires_auth'] = ! empty( $definition['requires_auth'] );
 		$definition['requires_identity'] = ! empty( $definition['requires_identity'] );
+		$contexts = $definition['contexts'];
+		if ( ! is_array( $contexts ) ) {
+			$contexts = array( (string) $contexts );
+		}
+		$contexts = array_values(
+			array_filter(
+				array_map(
+					function( $context ) {
+						return sanitize_key( (string) $context );
+					},
+					$contexts
+				)
+			)
+		);
+		$definition['contexts'] = array_values( array_unique( $contexts ) );
 
 		if ( '' === $definition['id'] ) {
 			return array();
@@ -478,4 +498,3 @@ final class PIB_Portal_Modules {
 		return $definition;
 	}
 }
-

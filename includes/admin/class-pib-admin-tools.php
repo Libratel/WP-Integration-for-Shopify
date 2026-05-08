@@ -124,172 +124,218 @@ final class PIB_Admin_Tools {
 
 		$this->handle_admin_actions();
 
-		$tab = $this->request_text( 'tab' );
-		if ( '' === $tab ) {
-			$tab = 'overview';
-		}
-		if ( ! in_array( $tab, array( 'overview', 'mappings', 'failures', 'health', 'logs', 'advanced' ), true ) ) {
-			$tab = 'overview';
-		}
+		$location = $this->normalized_location();
+		$tab      = isset( $location['tab'] ) ? sanitize_key( (string) $location['tab'] ) : 'mappings';
+		$panel    = isset( $location['panel'] ) ? sanitize_key( (string) $location['panel'] ) : 'summary';
 
 		echo '<div class="wrap">';
 		echo '<h1>Portal Bridge Tools</h1>';
-		echo '<p>Operational controls for mappings, failures, health checks, audit logs, and advanced troubleshooting panels.</p>';
+		echo '<p>Operational controls for mapping workflows, failure triage, and observability diagnostics.</p>';
 		$this->render_notice_from_query();
 		echo '<h2 class="nav-tab-wrapper">';
-		echo '<a class="nav-tab ' . ( 'overview' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'overview' ) ) . '">Overview</a>';
 		echo '<a class="nav-tab ' . ( 'mappings' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'mappings' ) ) . '">Mappings</a>';
 		echo '<a class="nav-tab ' . ( 'failures' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'failures' ) ) . '">Failures</a>';
-		echo '<a class="nav-tab ' . ( 'health' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'health' ) ) . '">Health</a>';
-		echo '<a class="nav-tab ' . ( 'logs' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'logs' ) ) . '">Audit Logs</a>';
-		echo '<a class="nav-tab ' . ( 'advanced' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->tab_url( 'advanced' ) ) . '">Advanced</a>';
+		echo '<a class="nav-tab ' . ( 'observability' === $tab ? 'nav-tab-active' : '' ) . '" href="' . esc_url( $this->observability_panel_url( 'summary' ) ) . '">Observability</a>';
 		echo '</h2>';
 
-		if ( 'advanced' === $tab ) {
-			$this->render_advanced_tab();
-		} elseif ( 'logs' === $tab ) {
-			$this->render_logs_tab();
-		} elseif ( 'health' === $tab ) {
-			$this->render_health_tab();
-		} elseif ( 'failures' === $tab ) {
+		if ( 'failures' === $tab ) {
 			$this->render_failures_tab();
 		} elseif ( 'mappings' === $tab ) {
 			$this->render_mappings_tab();
 		} else {
-			$this->render_overview_tab();
+			$this->render_observability_tab( $panel );
 		}
 
 		echo '</div>';
 	}
 
 	/**
-	 * Render operational overview tab with direct entry points.
+	 * Define observability panels for routing and summary card generation.
+	 *
+	 * @return array<string, array<string, mixed>>
+	 */
+	private function observability_panels() {
+		return array(
+			'summary' => array(
+				'title'           => 'Observability Overview',
+				'description'     => 'Select a panel to continue.',
+				'show_in_summary' => false,
+			),
+			'health' => array(
+				'title'           => 'Health Snapshot',
+				'description'     => 'Runtime checks, support snapshot preview, and JSON download.',
+				'show_in_summary' => true,
+			),
+			'logs' => array(
+				'title'           => 'Audit Logs',
+				'description'     => 'Filter and inspect recent auth/access events.',
+				'show_in_summary' => true,
+			),
+			'routes' => array(
+				'title'           => 'Route Access',
+				'description'     => 'Diagnose protected-route behavior and redirect loop risk.',
+				'show_in_summary' => true,
+			),
+			'extensions' => array(
+				'title'           => 'Extensions',
+				'description'     => 'Inspect module lifecycle and portal extension visibility.',
+				'show_in_summary' => true,
+			),
+			'diagnostics' => array(
+				'title'           => 'Effective Diagnostics',
+				'description'     => 'View computed references, effective values, and config diagnostics.',
+				'show_in_summary' => true,
+			),
+			'token' => array(
+				'title'           => 'Token Check',
+				'description'     => 'Validate JWT signature/claims and mapping outcomes.',
+				'show_in_summary' => true,
+			),
+			'setup_assistant' => array(
+				'title'           => 'Setup Assistant',
+				'description'     => 'Guided Shopify app proxy and bridge flow setup.',
+				'show_in_summary' => false,
+			),
+			'bridge_contract' => array(
+				'title'           => 'Bridge Contract',
+				'description'     => 'Reference values for Shopify->WordPress handoff contract.',
+				'show_in_summary' => false,
+			),
+			'bridge_simulator' => array(
+				'title'           => 'Bridge Simulator',
+				'description'     => 'Internal JWT handoff simulator with managed POST intake.',
+				'show_in_summary' => false,
+			),
+		);
+	}
+
+	/**
+	 * Normalize tools query args into a single operations location payload.
+	 *
+	 * @return array<string, string>
+	 */
+	private function normalized_location() {
+		$tab   = sanitize_key( $this->request_text( 'tab' ) );
+		$panel = sanitize_key( $this->request_text( 'panel' ) );
+		if ( '' === $tab ) {
+			$tab = 'mappings';
+		}
+
+		if ( ! in_array( $tab, array( 'mappings', 'failures', 'observability' ), true ) ) {
+			$tab   = 'observability';
+			$panel = 'summary';
+		}
+
+		$valid_observability = array_keys( $this->observability_panels() );
+		if ( 'observability' === $tab ) {
+			if ( '' === $panel ) {
+				$panel = 'summary';
+			}
+			if ( ! in_array( $panel, $valid_observability, true ) ) {
+				$panel = 'summary';
+			}
+		} else {
+			$panel = '';
+		}
+
+		return array(
+			'tab'   => $tab,
+			'panel' => $panel,
+		);
+	}
+
+	/**
+	 * Render observability workspace and selected diagnostic panel.
+	 *
+	 * @param string $panel Active panel key.
 	 *
 	 * @return void
 	 */
-	private function render_overview_tab() {
-		$cards = array(
-			array(
-				'title'       => 'Mappings',
-				'description' => 'Create, search, and update customer-to-user mappings.',
-				'url'         => $this->tab_url( 'mappings' ),
-				'action'      => 'Open Mappings',
-			),
-			array(
-				'title'       => 'Failures',
-				'description' => 'Review auth and mapping-denial records with guided actions.',
-				'url'         => $this->tab_url( 'failures' ),
-				'action'      => 'Open Failures',
-			),
-			array(
-				'title'       => 'Health',
-				'description' => 'Check runtime health and download support snapshots.',
-				'url'         => $this->tab_url( 'health' ),
-				'action'      => 'Open Health',
-			),
-			array(
-				'title'       => 'Audit Logs',
-				'description' => 'Filter and inspect recent plugin activity and events.',
-				'url'         => $this->tab_url( 'logs' ),
-				'action'      => 'Open Audit Logs',
-			),
-			array(
-				'title'       => 'Route Access (Advanced)',
-				'description' => 'Diagnose destination protection and redirect-loop risk.',
-				'url'         => $this->advanced_panel_url( 'routes' ),
-				'action'      => 'Open Route Access',
-			),
-			array(
-				'title'       => 'Extensions (Advanced)',
-				'description' => 'Inspect module registry and portal extension visibility.',
-				'url'         => $this->advanced_panel_url( 'extensions' ),
-				'action'      => 'Open Extensions',
-			),
-			array(
-				'title'       => 'Token Check (Advanced)',
-				'description' => 'Jump to advanced troubleshooting tools in the new panel workspace.',
-				'url'         => $this->advanced_panel_url( 'token' ),
-				'action'      => 'Open Advanced',
-			),
-		);
+	private function render_observability_tab( $panel = 'summary' ) {
+		$panels = $this->observability_panels();
+		$panel = sanitize_key( (string) $panel );
+		if ( '' === $panel || ! isset( $panels[ $panel ] ) ) {
+			$panel = 'summary';
+		}
 
-		echo '<h2 style="margin-top:18px;">Operations Overview</h2>';
-		echo '<p>Choose a workspace below to continue with day-to-day operations or advanced troubleshooting.</p>';
-		echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;max-width:1180px;">';
-		foreach ( $cards as $card ) {
-			if ( ! is_array( $card ) ) {
+		echo '<h2 style="margin-top:18px;">Observability</h2>';
+		echo '<p>Diagnostics and support tooling are grouped here to keep operations focused and scalable.</p>';
+		echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;max-width:1180px;margin:10px 0 14px 0;">';
+		foreach ( $panels as $card_panel => $card ) {
+			$card_panel = sanitize_key( (string) $card_panel );
+			if ( '' === $card_panel || ! is_array( $card ) || empty( $card['show_in_summary'] ) ) {
 				continue;
 			}
-			$title       = isset( $card['title'] ) ? sanitize_text_field( (string) $card['title'] ) : '';
-			$description = isset( $card['description'] ) ? sanitize_text_field( (string) $card['description'] ) : '';
-			$url         = isset( $card['url'] ) ? esc_url_raw( (string) $card['url'] ) : '';
-			$action      = isset( $card['action'] ) ? sanitize_text_field( (string) $card['action'] ) : 'Open';
-			if ( '' === $title || '' === $url ) {
+			$title      = isset( $card['title'] ) ? sanitize_text_field( (string) $card['title'] ) : '';
+			$desc       = isset( $card['description'] ) ? sanitize_text_field( (string) $card['description'] ) : '';
+			if ( '' === $title ) {
 				continue;
 			}
+
+			$button_label = $card_panel === $panel ? 'Active' : 'Open';
+			$button_class = $card_panel === $panel ? 'button button-primary' : 'button';
 
 			echo '<section style="background:#fff;border:1px solid #dcdcde;border-radius:8px;padding:14px;">';
 			echo '<h3 style="margin:0 0 8px 0;">' . esc_html( $title ) . '</h3>';
-			if ( '' !== $description ) {
-				echo '<p style="margin:0 0 12px 0;color:#50575e;">' . esc_html( $description ) . '</p>';
+			if ( '' !== $desc ) {
+				echo '<p style="margin:0 0 12px 0;color:#50575e;">' . esc_html( $desc ) . '</p>';
 			}
-			echo '<a class="button" href="' . esc_url( $url ) . '">' . esc_html( $action ) . '</a>';
+			echo '<a class="' . esc_attr( $button_class ) . '" href="' . esc_url( $this->observability_panel_url( $card_panel ) ) . '">' . esc_html( $button_label ) . '</a>';
 			echo '</section>';
 		}
+		echo '</div>';
+
+		if ( 'summary' === $panel ) {
+			echo '<p style="margin-top:4px;">Select a panel above to continue.</p>';
+			return;
+		}
+
+		echo '<p style="margin:0 0 8px 0;"><a href="' . esc_url( $this->observability_panel_url( 'summary' ) ) . '">&larr; Back to Observability Overview</a></p>';
+		if ( $this->render_observability_panel_content( $panel ) ) {
+			return;
+		}
+
+		echo '<div class="notice notice-error" style="margin:16px 0 12px 0;">';
+		echo '<p><strong>Observability panel unavailable:</strong> the selected panel could not be rendered.</p>';
 		echo '</div>';
 	}
 
 	/**
-	 * Render advanced operations workspace with panel-level routing.
+	 * Render one observability panel body.
 	 *
-	 * @return void
+	 * @param string $panel Panel key.
+	 *
+	 * @return bool
 	 */
-	private function render_advanced_tab() {
-		$panels = array(
-			'routes'           => 'Route Access',
-			'extensions'       => 'Extensions',
-			'token'            => 'Token Check',
-			'setup_assistant'  => 'Setup Assistant',
-			'bridge_contract'  => 'Bridge Contract',
-			'bridge_simulator' => 'Bridge Simulator',
-			'diagnostics'      => 'Diagnostics',
-		);
-
-		$panel = sanitize_key( $this->request_text( 'panel' ) );
-		if ( '' === $panel || ! isset( $panels[ $panel ] ) ) {
-			$panel = 'routes';
+	private function render_observability_panel_content( $panel ) {
+		$panel = sanitize_key( (string) $panel );
+		if ( '' === $panel || 'summary' === $panel ) {
+			return true;
 		}
 
-		echo '<h2 style="margin-top:18px;">Advanced Workspace</h2>';
-		echo '<p>Expert tools are grouped here while setup remains focused on configuration.</p>';
-		echo '<h3 class="nav-tab-wrapper" style="margin-top:14px;">';
-		foreach ( $panels as $panel_key => $panel_label ) {
-			$is_active = $panel_key === $panel ? ' nav-tab-active' : '';
-			echo '<a class="nav-tab' . esc_attr( $is_active ) . '" href="' . esc_url( $this->advanced_panel_url( $panel_key ) ) . '">' . esc_html( $panel_label ) . '</a>';
+		if ( 'health' === $panel ) {
+			$this->render_health_tab();
+			return true;
 		}
-		echo '</h3>';
-
+		if ( 'logs' === $panel ) {
+			$this->render_logs_tab();
+			return true;
+		}
 		if ( 'routes' === $panel ) {
 			$this->render_routes_tab();
-			return;
+			return true;
 		}
-
 		if ( 'extensions' === $panel ) {
 			$this->render_extensions_tab();
-			return;
+			return true;
 		}
 
 		$settings_page = class_exists( 'PIB_Settings' ) ? PIB_Settings::instance( $this->plugin ) : null;
 		if ( $settings_page instanceof PIB_Settings && method_exists( $settings_page, 'render_advanced_tools_panel' ) ) {
-			$rendered = $settings_page->render_advanced_tools_panel( $panel, $this->advanced_panel_url( $panel ) );
-			if ( $rendered ) {
-				return;
-			}
+			return (bool) $settings_page->render_advanced_tools_panel( $panel, $this->observability_panel_url( $panel ) );
 		}
 
-		echo '<div class="notice notice-error" style="margin:16px 0 12px 0;">';
-		echo '<p><strong>Advanced panel unavailable:</strong> the selected panel could not be rendered.</p>';
-		echo '</div>';
+		return false;
 	}
 
 	/**
@@ -341,6 +387,7 @@ final class PIB_Admin_Tools {
 		echo '<select name="status">';
 		echo '<option value="" ' . selected( $status, '', false ) . '>All statuses</option>';
 		echo '<option value="active" ' . selected( $status, 'active', false ) . '>Active</option>';
+		echo '<option value="pending_verification" ' . selected( $status, 'pending_verification', false ) . '>Pending Verification</option>';
 		echo '<option value="blocked" ' . selected( $status, 'blocked', false ) . '>Blocked</option>';
 		echo '<option value="archived" ' . selected( $status, 'archived', false ) . '>Archived</option>';
 		echo '</select> ';
@@ -368,7 +415,7 @@ final class PIB_Admin_Tools {
 
 				$status = sanitize_key( (string) $row['status'] );
 				$actions = array();
-				foreach ( array( 'active' => 'Activate', 'blocked' => 'Block', 'archived' => 'Archive' ) as $to_status => $label ) {
+				foreach ( array( 'active' => 'Activate', 'pending_verification' => 'Mark Pending', 'blocked' => 'Block', 'archived' => 'Archive' ) as $to_status => $label ) {
 					if ( $to_status === $status ) {
 						$actions[] = '<span style="opacity:.65;">' . esc_html( $label ) . '</span>';
 						continue;
@@ -414,9 +461,9 @@ final class PIB_Admin_Tools {
 			return;
 		}
 
-		$token_check_url    = $this->advanced_panel_url( 'token' );
+		$token_check_url    = $this->observability_panel_url( 'token' );
 		$bridge_setup_url   = $this->settings_page_url();
-		$contract_tool_url  = $this->advanced_panel_url( 'bridge_contract' );
+		$contract_tool_url  = $this->observability_panel_url( 'bridge_contract' );
 		echo '<div class="notice notice-info" style="margin:12px 0 14px 0;"><p><strong>Bridge troubleshooting note:</strong> this table tracks JWT handoff and mapping denials. A normal Shopify customer login without JWT redirect to intake commonly appears as <code>pib_missing_token</code>.</p><p><a href="' . esc_url( $token_check_url ) . '">Open Token Check</a> | <a href="' . esc_url( $contract_tool_url ) . '">Open Bridge Contract</a> | <a href="' . esc_url( $bridge_setup_url ) . '">Open Bridge Setup</a></p></div>';
 
 		$search = $this->request_text( 'q' );
@@ -556,9 +603,9 @@ final class PIB_Admin_Tools {
 		$source_id = sanitize_key( (string) $source_id );
 		$reason_id = sanitize_key( (string) $reason_id );
 
-		$token_check_url     = $this->advanced_panel_url( 'token' );
+		$token_check_url     = $this->observability_panel_url( 'token' );
 		$bridge_setup_url    = $this->settings_page_url();
-		$bridge_contract_url = $this->advanced_panel_url( 'bridge_contract' );
+		$bridge_contract_url = $this->observability_panel_url( 'bridge_contract' );
 		$mappings_url       = $this->tab_url( 'mappings' );
 
 		$guidance = array(
@@ -748,6 +795,68 @@ final class PIB_Admin_Tools {
 					'Bridge Contract' => $bridge_contract_url,
 				),
 			),
+			'pib_email_verification_required' => array(
+				'text'  => 'First-time identity mapping is pending email verification. User must complete the one-time verification link before login activation.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+					'Bridge Setup' => $bridge_setup_url,
+				),
+			),
+			'pib_email_verification_rate_limited' => array(
+				'text'  => 'Verification emails were requested too frequently for this mapping. Wait for cooldown or review automated retries.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+			'pib_email_verification_send_failed' => array(
+				'text'  => 'Verification link issuance failed. Confirm WordPress outbound mail is working and retry sign-in.',
+				'links' => array(
+					'Bridge Setup' => $bridge_setup_url,
+					'Mappings' => $mappings_url,
+				),
+			),
+			'pib_verification_invalid_token' => array(
+				'text'  => 'Verification link token was missing or invalid.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+			'pib_verification_already_used' => array(
+				'text'  => 'Verification link was already consumed. Start sign-in again to issue a fresh one-time link if needed.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+			'pib_verification_expired_token' => array(
+				'text'  => 'Verification link expired. Start sign-in again to request a fresh link.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+			'pib_verification_mapping_inactive' => array(
+				'text'  => 'Verification link no longer matches a pending mapping state. Start sign-in again if verification is still required.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+			'pib_verification_mapping_update_failed' => array(
+				'text'  => 'Verification link was valid but mapping activation failed. Review mapping record state and retry.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+			'pib_verification_user_missing' => array(
+				'text'  => 'Verification token points to a missing WordPress user. Recreate/link mapping and retry onboarding.',
+				'links' => array(
+					'Mappings' => $mappings_url,
+				),
+			),
+			'pib_session_client_binding_mismatch' => array(
+				'text'  => 'Managed session fingerprint changed (user-agent/IP/session token), so session was invalidated to prevent replay.',
+				'links' => array(
+					'Bridge Setup' => $bridge_setup_url,
+				),
+			),
 			'missing_email_claim' => array(
 				'text'  => 'No email claim was available for first-time mapping. Include `email` (or `customer_email`) in JWT so WordPress can auto-link or auto-create user records.',
 				'links' => array(
@@ -832,7 +941,7 @@ final class PIB_Admin_Tools {
 	}
 
 	/**
-	 * Render route access management tab.
+	 * Render Route Access observability panel.
 	 *
 	 * @return void
 	 */
@@ -846,7 +955,7 @@ final class PIB_Admin_Tools {
 		$rules    = PIB_Protected_Route_Policy::rules( $settings );
 		$setup_url = $this->settings_page_url();
 		$failures_url = $this->tab_url( 'failures' );
-		$token_url = $this->advanced_panel_url( 'token' );
+		$token_url = $this->observability_panel_url( 'token' );
 
 		$default_dest = isset( $settings['default_destination'] ) ? PIB_Destination::sanitize_destination( (string) $settings['default_destination'], '/' ) : '/';
 		$failure_dest = isset( $settings['failure_destination'] ) ? PIB_Destination::sanitize_destination( (string) $settings['failure_destination'], '/' ) : '/';
@@ -904,47 +1013,76 @@ final class PIB_Admin_Tools {
 		}
 
 		echo '<h2 style="margin-top:18px;">Route Access Assistant</h2>';
-		echo '<p>Use this page to diagnose redirect loops and understand exactly how destination protection is resolved.</p>';
+		echo '<p>Use this panel to diagnose redirect loops and confirm how destination protection resolves.</p>';
 		echo '<p><a class="button button-secondary" href="' . esc_url( $setup_url ) . '">Open Bridge Setup</a> <a class="button" href="' . esc_url( $failures_url ) . '">Open Mapping Failures</a> <a class="button" href="' . esc_url( $token_url ) . '">Open Token Check</a></p>';
 
 		$managed_required = ! empty( $settings['require_managed_session_for_protected_routes'] );
 		$mapping_required = ! empty( $settings['require_active_mapping'] );
+		$check_counts     = array(
+			'error'   => 0,
+			'warning' => 0,
+			'ok'      => 0,
+		);
+		foreach ( $checks as $check ) {
+			$level = isset( $check['level'] ) ? sanitize_key( (string) $check['level'] ) : 'ok';
+			if ( isset( $check_counts[ $level ] ) ) {
+				$check_counts[ $level ]++;
+			} else {
+				$check_counts['ok']++;
+			}
+		}
 
-		echo '<h3 style="margin-top:18px;">Current Policy Inputs</h3>';
+		echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;max-width:780px;margin:10px 0 14px 0;">';
+		echo '<section style="background:#fff1f0;border:1px solid #f2c2be;border-radius:8px;padding:12px;"><h3 style="margin:0 0 6px 0;color:#8a1f17;">Action Needed</h3><p style="font-size:24px;margin:0 0 4px 0;font-weight:600;">' . esc_html( (string) $check_counts['error'] ) . '</p><p style="margin:0;color:#6c6f75;">Resolve before rollout.</p></section>';
+		echo '<section style="background:#fff8e5;border:1px solid #ecd08f;border-radius:8px;padding:12px;"><h3 style="margin:0 0 6px 0;color:#8f5f00;">Warnings</h3><p style="font-size:24px;margin:0 0 4px 0;font-weight:600;">' . esc_html( (string) $check_counts['warning'] ) . '</p><p style="margin:0;color:#6c6f75;">Review recommended.</p></section>';
+		echo '<section style="background:#edf7ed;border:1px solid #b8ddb8;border-radius:8px;padding:12px;"><h3 style="margin:0 0 6px 0;color:#1e6b1e;">OK</h3><p style="font-size:24px;margin:0 0 4px 0;font-weight:600;">' . esc_html( (string) $check_counts['ok'] ) . '</p><p style="margin:0;color:#6c6f75;">Checks currently passing.</p></section>';
+		echo '</div>';
+
+		echo '<h3 style="margin-top:18px;">Risk Checks</h3>';
+		echo '<table class="widefat striped" style="max-width:1000px;">';
+		echo '<thead><tr><th style="width:160px;">Status</th><th>Finding</th><th style="width:230px;">Action</th></tr></thead><tbody>';
+		foreach ( $checks as $check ) {
+			$level       = isset( $check['level'] ) ? sanitize_key( (string) $check['level'] ) : 'ok';
+			$label       = 'OK';
+			$badge_style = 'background:#edf7ed;border:1px solid #b8ddb8;color:#1e6b1e;';
+			if ( 'error' === $level ) {
+				$label       = 'Action Needed';
+				$badge_style = 'background:#fff1f0;border:1px solid #f2c2be;color:#8a1f17;';
+			} elseif ( 'warning' === $level ) {
+				$label       = 'Warning';
+				$badge_style = 'background:#fff8e5;border:1px solid #ecd08f;color:#8f5f00;';
+			}
+			$message = isset( $check['message'] ) ? (string) $check['message'] : '';
+			$action  = isset( $check['action'] ) ? sanitize_text_field( (string) $check['action'] ) : '';
+			$url     = isset( $check['url'] ) ? esc_url_raw( (string) $check['url'] ) : '';
+			$action_markup = '&mdash;';
+			if ( '' !== $action && '' !== $url ) {
+				$action_markup = '<a href="' . esc_url( $url ) . '">' . esc_html( $action ) . '</a>';
+			}
+			echo '<tr>';
+			echo '<td><span style="display:inline-block;padding:2px 8px;border-radius:999px;font-weight:600;' . esc_attr( $badge_style ) . '">' . esc_html( $label ) . '</span></td>';
+			echo '<td>' . esc_html( $message ) . '</td>';
+			echo '<td>' . $action_markup . '</td>';
+			echo '</tr>';
+		}
+		echo '</tbody></table>';
+
+		echo '<details style="margin-top:16px;"' . ( $check_counts['error'] > 0 ? ' open' : '' ) . '>';
+		echo '<summary><strong>Current Policy Inputs</strong></summary>';
 		echo '<table class="widefat striped" style="margin-top:10px;max-width:1000px;"><tbody>';
-		echo '<tr><th style="width:240px;">Protected Prefixes</th><td><code>' . esc_html( implode( ', ', $rules['protected_prefixes'] ) ) . '</code></td><td>' . esc_html( 'Routes matching these prefixes are protection candidates.' ) . '</td></tr>';
-		echo '<tr><th>Unprotected Prefixes</th><td><code>' . esc_html( implode( ', ', $rules['unprotected_prefixes'] ) ) . '</code></td><td>' . esc_html( 'These override protected matches and stay public.' ) . '</td></tr>';
+		echo '<tr><th style="width:240px;">Protected Prefixes</th><td><code>' . esc_html( implode( ', ', (array) $rules['protected_prefixes'] ) ) . '</code></td><td>' . esc_html( 'Routes matching these prefixes are protection candidates.' ) . '</td></tr>';
+		echo '<tr><th>Unprotected Prefixes</th><td><code>' . esc_html( implode( ', ', (array) $rules['unprotected_prefixes'] ) ) . '</code></td><td>' . esc_html( 'These override protected matches and stay public.' ) . '</td></tr>';
 		echo '<tr><th>Default Destination</th><td><code>' . esc_html( $default_dest ) . '</code></td><td>' . esc_html( ! empty( $default_eval['is_protected'] ) ? 'Currently protected.' : 'Currently public.' ) . '</td></tr>';
 		echo '<tr><th>Failure Destination</th><td><code>' . esc_html( $failure_dest ) . '</code></td><td>' . esc_html( ! empty( $failure_eval['is_protected'] ) ? 'Currently protected (loop risk).' : 'Currently public (recommended).' ) . '</td></tr>';
 		echo '<tr><th>Require Managed Session</th><td><code>' . esc_html( $managed_required ? 'enabled' : 'disabled' ) . '</code></td><td>' . esc_html( $managed_required ? 'Protected routes require bridge-managed session context.' : 'Any valid authenticated WP session can pass protected-route gate.' ) . '</td></tr>';
 		echo '<tr><th>Require Active Mapping</th><td><code>' . esc_html( $mapping_required ? 'enabled' : 'disabled' ) . '</code></td><td>' . esc_html( $mapping_required ? 'Protected routes also require active customer mapping context.' : 'Mapping context is not required for protected-route pass.' ) . '</td></tr>';
 		echo '</tbody></table>';
-
-		echo '<h3 style="margin-top:18px;">Risk Checks</h3>';
-		echo '<ul>';
-		foreach ( $checks as $check ) {
-			$level = isset( $check['level'] ) ? (string) $check['level'] : 'ok';
-			$label = 'OK';
-			if ( 'error' === $level ) {
-				$label = 'Action Needed';
-			} elseif ( 'warning' === $level ) {
-				$label = 'Warning';
-			}
-			$message = isset( $check['message'] ) ? (string) $check['message'] : '';
-			$action  = isset( $check['action'] ) ? sanitize_text_field( (string) $check['action'] ) : '';
-			$url     = isset( $check['url'] ) ? esc_url_raw( (string) $check['url'] ) : '';
-			echo '<li><strong>' . esc_html( $label ) . ':</strong> ' . esc_html( $message );
-			if ( '' !== $action && '' !== $url ) {
-				echo ' <a href="' . esc_url( $url ) . '">' . esc_html( $action ) . '</a>';
-			}
-			echo '</li>';
-		}
-		echo '</ul>';
+		echo '</details>';
 
 		echo '<h3 style="margin-top:18px;">Route Tester</h3>';
-		echo '<form method="get" action="' . esc_url( $this->advanced_panel_url( 'routes' ) ) . '">';
+		echo '<form method="get" action="' . esc_url( $this->observability_panel_url( 'routes' ) ) . '">';
 		echo '<input type="hidden" name="page" value="pib-tools" />';
-		echo '<input type="hidden" name="tab" value="advanced" />';
+		echo '<input type="hidden" name="tab" value="observability" />';
 		echo '<input type="hidden" name="panel" value="routes" />';
 		echo '<input type="text" class="regular-text code" name="dest" value="' . esc_attr( $test_raw ) . '" placeholder="/dashboard/backorders?status=open" /> ';
 		submit_button( 'Evaluate', 'secondary', '', false );
@@ -962,13 +1100,14 @@ final class PIB_Admin_Tools {
 		}
 
 		$samples = PIB_Protected_Route_Policy::sample_destinations( $settings );
-		echo '<h3 style="margin-top:18px;">Sample Routes</h3>';
+		echo '<details style="margin-top:18px;">';
+		echo '<summary><strong>Sample Routes Matrix</strong></summary>';
 		echo '<table class="widefat striped" style="max-width:1000px;">';
 		echo '<thead><tr><th>Destination</th><th>Protected?</th><th>Matched Protected</th><th>Matched Unprotected</th><th>Expected Behavior</th><th>Action</th></tr></thead><tbody>';
 		foreach ( $samples as $sample ) {
 			$evaluation = PIB_Protected_Route_Policy::evaluate_destination( $sample, $settings );
 			$is_protected = ! empty( $evaluation['is_protected'] );
-			$eval_url = $this->advanced_panel_url(
+			$eval_url = $this->observability_panel_url(
 				'routes',
 				array(
 					'dest' => (string) $sample,
@@ -984,6 +1123,7 @@ final class PIB_Admin_Tools {
 			echo '</tr>';
 		}
 		echo '</tbody></table>';
+		echo '</details>';
 	}
 
 	/**
@@ -1068,7 +1208,7 @@ final class PIB_Admin_Tools {
 		} else {
 			echo '<table class="widefat striped" style="max-width:1100px;">';
 			echo '<thead><tr>';
-			echo '<th>ID</th><th>Label</th><th>Source</th><th>Destination</th><th>Shortcode</th><th>Protected</th><th>Status</th><th>Reason</th>';
+			echo '<th>ID</th><th>Label</th><th>Source</th><th>Contexts</th><th>Destination</th><th>Shortcode</th><th>Protected</th><th>Status</th><th>Reason</th>';
 			echo '</tr></thead><tbody>';
 
 			foreach ( $modules as $module ) {
@@ -1084,6 +1224,9 @@ final class PIB_Admin_Tools {
 				echo '<td><code>' . esc_html( isset( $module['id'] ) ? (string) $module['id'] : '' ) . '</code></td>';
 				echo '<td>' . esc_html( isset( $module['label'] ) ? (string) $module['label'] : '' ) . '</td>';
 				echo '<td>' . esc_html( isset( $module['source'] ) ? (string) $module['source'] : '' ) . '</td>';
+				$contexts = isset( $module['contexts'] ) && is_array( $module['contexts'] ) ? $module['contexts'] : array();
+				$contexts = array_values( array_filter( array_map( 'sanitize_key', $contexts ) ) );
+				echo '<td><code>' . esc_html( empty( $contexts ) ? '*' : implode( ', ', $contexts ) ) . '</code></td>';
 				echo '<td><code>' . esc_html( isset( $module['destination'] ) ? (string) $module['destination'] : '' ) . '</code></td>';
 				$shortcode = isset( $module['shortcode'] ) ? sanitize_key( (string) $module['shortcode'] ) : '';
 				echo '<td><code>' . esc_html( '' !== $shortcode ? '[' . $shortcode . ']' : '' ) . '</code></td>';
@@ -1095,10 +1238,11 @@ final class PIB_Admin_Tools {
 
 			echo '</tbody></table>';
 		}
+		echo '<p class="description">Context legend: <code>*</code> means all contexts. Common contexts: <code>portal_dashboard</code>, <code>admin_tools</code>, <code>settings_diagnostics</code>.</p>';
 
 		echo '<h3 style="margin-top:20px;">Extension Hook Example</h3>';
 		echo '<pre style="background:#fff;border:1px solid #ddd;padding:12px;overflow:auto;"><code>';
-		echo esc_html( "add_action( 'pib_register_portal_modules', function( \$registry ) {\n\tif ( ! \$registry instanceof PIB_Portal_Modules ) {\n\t\treturn;\n\t}\n\n\t\$registry->register_module( 'invoices', array(\n\t\t'label'             => 'Invoices',\n\t\t'description'       => 'View billing documents.',\n\t\t'destination'       => '/dashboard/invoices',\n\t\t'shortcode'         => 'portal_invoices',\n\t\t'requires_auth'     => true,\n\t\t'requires_identity' => true,\n\t\t'source'            => 'custom',\n\t\t'priority'          => 30,\n\t) );\n}, 20 );" );
+		echo esc_html( "add_action( 'pib_register_portal_modules', function( \$registry ) {\n\tif ( ! \$registry instanceof PIB_Portal_Modules ) {\n\t\treturn;\n\t}\n\n\t\$registry->register_module( 'invoices', array(\n\t\t'label'             => 'Invoices',\n\t\t'description'       => 'View billing documents.',\n\t\t'destination'       => '/dashboard/invoices',\n\t\t'shortcode'         => 'portal_invoices',\n\t\t'requires_auth'     => true,\n\t\t'requires_identity' => true,\n\t\t'contexts'          => array( 'portal_dashboard', 'admin_tools' ),\n\t\t'source'            => 'custom',\n\t\t'priority'          => 30,\n\t) );\n}, 20 );" );
 		echo '</code></pre>';
 	}
 
@@ -1131,34 +1275,75 @@ final class PIB_Admin_Tools {
 			add_query_arg(
 				array(
 					'page'       => 'pib-tools',
-					'tab'        => 'health',
+					'tab'        => 'observability',
+					'panel'      => 'health',
 					'pib_action' => 'download_health_snapshot',
 				),
 				admin_url( 'admin.php' )
 			),
 			'pib_download_health_snapshot'
 		);
+		$critical_count = absint( isset( $summary['critical'] ) ? $summary['critical'] : 0 );
+		$warning_count  = absint( isset( $summary['warning'] ) ? $summary['warning'] : 0 );
+		$ok_count       = absint( isset( $summary['ok'] ) ? $summary['ok'] : 0 );
+		$total_count    = absint( isset( $summary['total'] ) ? $summary['total'] : 0 );
+		$auth_window    = isset( $snapshot['auth_window_24h'] ) && is_array( $snapshot['auth_window_24h'] ) ? $snapshot['auth_window_24h'] : array();
+		$mapping_counts = isset( $snapshot['mapping_counts'] ) && is_array( $snapshot['mapping_counts'] ) ? $snapshot['mapping_counts'] : array();
+
+		usort(
+			$checks,
+			function( $a, $b ) {
+				$a_level = isset( $a['level'] ) ? sanitize_key( (string) $a['level'] ) : 'ok';
+				$b_level = isset( $b['level'] ) ? sanitize_key( (string) $b['level'] ) : 'ok';
+				$rank    = array(
+					'critical' => 0,
+					'warning'  => 1,
+					'ok'       => 2,
+				);
+				$a_rank = isset( $rank[ $a_level ] ) ? $rank[ $a_level ] : 2;
+				$b_rank = isset( $rank[ $b_level ] ) ? $rank[ $b_level ] : 2;
+				if ( $a_rank !== $b_rank ) {
+					return $a_rank <=> $b_rank;
+				}
+
+				$a_id = isset( $a['id'] ) ? sanitize_key( (string) $a['id'] ) : '';
+				$b_id = isset( $b['id'] ) ? sanitize_key( (string) $b['id'] ) : '';
+				return strcasecmp( $a_id, $b_id );
+			}
+		);
 
 		echo '<h2 style="margin-top:18px;">Operational Health</h2>';
 		echo '<p>Runtime checks that validate configuration integrity, module state, data tables, and recent auth/mapping signals.</p>';
 		echo '<p><strong>Overall Status:</strong> ' . esc_html( $status_label ) . '</p>';
-		echo '<p><a class="button button-secondary" href="' . esc_url( $this->tab_url( 'health' ) ) . '">Refresh Checks</a> ';
+		echo '<p><a class="button button-secondary" href="' . esc_url( $this->observability_panel_url( 'health' ) ) . '">Refresh Checks</a> ';
 		echo '<a class="button button-primary" href="' . esc_url( $download_url ) . '">Download JSON Snapshot</a></p>';
 
+		echo '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;max-width:900px;margin:8px 0 12px 0;">';
+		echo '<section style="background:#fff1f0;border:1px solid #f2c2be;border-radius:8px;padding:12px;"><h3 style="margin:0 0 6px 0;color:#8a1f17;">Action Needed</h3><p style="font-size:24px;margin:0 0 4px 0;font-weight:600;">' . esc_html( (string) $critical_count ) . '</p><p style="margin:0;color:#6c6f75;">Critical checks</p></section>';
+		echo '<section style="background:#fff8e5;border:1px solid #ecd08f;border-radius:8px;padding:12px;"><h3 style="margin:0 0 6px 0;color:#8f5f00;">Warnings</h3><p style="font-size:24px;margin:0 0 4px 0;font-weight:600;">' . esc_html( (string) $warning_count ) . '</p><p style="margin:0;color:#6c6f75;">Needs review</p></section>';
+		echo '<section style="background:#edf7ed;border:1px solid #b8ddb8;border-radius:8px;padding:12px;"><h3 style="margin:0 0 6px 0;color:#1e6b1e;">Passing</h3><p style="font-size:24px;margin:0 0 4px 0;font-weight:600;">' . esc_html( (string) $ok_count ) . '</p><p style="margin:0;color:#6c6f75;">Healthy checks</p></section>';
+		echo '<section style="background:#f6f7f7;border:1px solid #dcdcde;border-radius:8px;padding:12px;"><h3 style="margin:0 0 6px 0;color:#1d2327;">Total</h3><p style="font-size:24px;margin:0 0 4px 0;font-weight:600;">' . esc_html( (string) $total_count ) . '</p><p style="margin:0;color:#6c6f75;">All checks</p></section>';
+		echo '</div>';
+
 		echo '<table class="widefat striped" style="max-width:780px;"><tbody>';
-		echo '<tr><th style="width:220px;">Critical Checks</th><td>' . esc_html( (string) absint( isset( $summary['critical'] ) ? $summary['critical'] : 0 ) ) . '</td></tr>';
-		echo '<tr><th>Warning Checks</th><td>' . esc_html( (string) absint( isset( $summary['warning'] ) ? $summary['warning'] : 0 ) ) . '</td></tr>';
-		echo '<tr><th>Passing Checks</th><td>' . esc_html( (string) absint( isset( $summary['ok'] ) ? $summary['ok'] : 0 ) ) . '</td></tr>';
-		echo '<tr><th>Total Checks</th><td>' . esc_html( (string) absint( isset( $summary['total'] ) ? $summary['total'] : 0 ) ) . '</td></tr>';
-		echo '<tr><th>Generated (UTC)</th><td><code>' . esc_html( isset( $snapshot['generated_at_utc'] ) ? (string) $snapshot['generated_at_utc'] : '' ) . '</code></td></tr>';
+		echo '<tr><th style="width:220px;">Generated (UTC)</th><td><code>' . esc_html( isset( $snapshot['generated_at_utc'] ) ? (string) $snapshot['generated_at_utc'] : '' ) . '</code></td></tr>';
 		echo '<tr><th>Next Trim Schedule (UTC)</th><td><code>' . esc_html( isset( $snapshot['trim_schedule_next_utc'] ) ? (string) $snapshot['trim_schedule_next_utc'] : '' ) . '</code></td></tr>';
+		echo '</tbody></table>';
+
+		echo '<h3 style="margin-top:18px;">Signals (Last 24h)</h3>';
+		echo '<table class="widefat striped" style="max-width:920px;"><tbody>';
+		echo '<tr><th style="width:260px;">Auth Success Events</th><td>' . esc_html( (string) absint( isset( $auth_window['success'] ) ? $auth_window['success'] : 0 ) ) . '</td></tr>';
+		echo '<tr><th>Auth Failure Events</th><td>' . esc_html( (string) absint( isset( $auth_window['failure'] ) ? $auth_window['failure'] : 0 ) ) . '</td></tr>';
+		echo '<tr><th>Mapping Count (Active/Total)</th><td>' . esc_html( (string) absint( isset( $mapping_counts['active'] ) ? $mapping_counts['active'] : 0 ) ) . ' / ' . esc_html( (string) absint( isset( $mapping_counts['total'] ) ? $mapping_counts['total'] : 0 ) ) . '</td></tr>';
+		echo '<tr><th>Pending Verification Mappings</th><td>' . esc_html( (string) absint( isset( $mapping_counts['pending_verification'] ) ? $mapping_counts['pending_verification'] : 0 ) ) . '</td></tr>';
+		echo '<tr><th>Blocked Mappings</th><td>' . esc_html( (string) absint( isset( $mapping_counts['blocked'] ) ? $mapping_counts['blocked'] : 0 ) ) . '</td></tr>';
 		echo '</tbody></table>';
 
 		echo '<h3 style="margin-top:18px;">Checks</h3>';
 		echo '<table class="widefat striped" style="max-width:1080px;">';
-		echo '<thead><tr><th style="width:180px;">ID</th><th style="width:160px;">Level</th><th>Message</th></tr></thead><tbody>';
+		echo '<thead><tr><th style="width:180px;">ID</th><th style="width:160px;">Level</th><th>Message</th><th style="width:220px;">Action</th></tr></thead><tbody>';
 		if ( empty( $checks ) ) {
-			echo '<tr><td colspan="3">No checks were generated.</td></tr>';
+			echo '<tr><td colspan="4">No checks were generated.</td></tr>';
 		} else {
 			foreach ( $checks as $check ) {
 				if ( ! is_array( $check ) ) {
@@ -1175,11 +1360,18 @@ final class PIB_Admin_Tools {
 				} elseif ( 'warning' === $check_level ) {
 					$level_label = 'Warning';
 				}
+				$action_label = isset( $check['action_label'] ) ? sanitize_text_field( (string) $check['action_label'] ) : '';
+				$action_url   = isset( $check['action_url'] ) ? esc_url_raw( (string) $check['action_url'] ) : '';
+				$action_markup = '&mdash;';
+				if ( '' !== $action_label && '' !== $action_url ) {
+					$action_markup = '<a href="' . esc_url( $action_url ) . '">' . esc_html( $action_label ) . '</a>';
+				}
 
 				echo '<tr>';
 				echo '<td><code>' . esc_html( $check_id ) . '</code></td>';
 				echo '<td>' . esc_html( $level_label ) . '</td>';
 				echo '<td>' . esc_html( $message ) . '</td>';
+				echo '<td>' . $action_markup . '</td>';
 				echo '</tr>';
 			}
 		}
@@ -1233,7 +1425,8 @@ final class PIB_Admin_Tools {
 
 		echo '<form method="get" style="margin-top:16px;">';
 		echo '<input type="hidden" name="page" value="pib-tools" />';
-		echo '<input type="hidden" name="tab" value="logs" />';
+		echo '<input type="hidden" name="tab" value="observability" />';
+		echo '<input type="hidden" name="panel" value="logs" />';
 		echo '<input type="search" name="q" value="' . esc_attr( $search ) . '" placeholder="Search logs..." />';
 		echo '<select name="level">';
 		echo '<option value="" ' . selected( $level, '', false ) . '>All levels</option>';
@@ -1249,7 +1442,8 @@ final class PIB_Admin_Tools {
 			add_query_arg(
 				array(
 					'page'       => 'pib-tools',
-					'tab'        => 'logs',
+					'tab'        => 'observability',
+					'panel'      => 'logs',
 					'pib_action' => 'clear_logs',
 				),
 				admin_url( 'admin.php' )
@@ -1286,8 +1480,9 @@ final class PIB_Admin_Tools {
 			$total,
 			$page,
 			$limit,
-			'logs',
+			'observability',
 			array(
+				'panel' => 'logs',
 				'q'     => $search,
 				'level' => $level,
 				'event' => $event,
@@ -1313,8 +1508,9 @@ final class PIB_Admin_Tools {
 			if ( ! $health_module instanceof PIB_Operations_Health ) {
 				wp_safe_redirect(
 					$this->tab_url(
-						'health',
+						'observability',
 						array(
+							'panel'           => 'health',
 							'pib_notice'      => 'health_snapshot_unavailable',
 							'pib_notice_type' => 'error',
 						)
@@ -1342,7 +1538,7 @@ final class PIB_Admin_Tools {
 			if ( $logger instanceof PIB_Audit_Log ) {
 				$logger->clear_logs();
 			}
-			wp_safe_redirect( $this->tab_url( 'logs', array( 'pib_notice' => 'logs_cleared', 'pib_notice_type' => 'success' ) ) );
+			wp_safe_redirect( $this->tab_url( 'observability', array( 'panel' => 'logs', 'pib_notice' => 'logs_cleared', 'pib_notice_type' => 'success' ) ) );
 			exit;
 		}
 
@@ -1352,7 +1548,7 @@ final class PIB_Admin_Tools {
 			if ( 'toggle_mapping_status' === $action ) {
 				$to_status = 'active' === $to_status ? 'blocked' : 'active';
 			}
-			if ( ! in_array( $to_status, array( 'active', 'blocked', 'archived' ), true ) ) {
+			if ( ! in_array( $to_status, array( 'active', 'pending_verification', 'blocked', 'archived' ), true ) ) {
 				$to_status = 'active';
 			}
 
@@ -1490,7 +1686,7 @@ final class PIB_Admin_Tools {
 		echo '<tr><th scope="row"><label for="pib_map_company">Company ID</label></th><td><input id="pib_map_company" class="regular-text" name="company_id" value="' . esc_attr( (string) $prefill['company'] ) . '" /></td></tr>';
 		echo '<tr><th scope="row"><label for="pib_map_user">WordPress User</label></th><td><input id="pib_map_user" class="regular-text" name="user_lookup" value="' . esc_attr( (string) $prefill['user'] ) . '" placeholder="ID, login, or email" required /><p class="description">Lookup accepts WordPress user ID, login, or email.</p></td></tr>';
 		echo '<tr><th scope="row"><label for="pib_map_email">Email</label></th><td><input id="pib_map_email" class="regular-text" name="email" value="' . esc_attr( (string) $prefill['email'] ) . '" placeholder="customer@example.com" /></td></tr>';
-		echo '<tr><th scope="row"><label for="pib_map_status">Status</label></th><td><select id="pib_map_status" name="status"><option value="active">Active</option><option value="blocked">Blocked</option><option value="archived">Archived</option></select></td></tr>';
+		echo '<tr><th scope="row"><label for="pib_map_status">Status</label></th><td><select id="pib_map_status" name="status"><option value="active">Active</option><option value="pending_verification">Pending Verification</option><option value="blocked">Blocked</option><option value="archived">Archived</option></select></td></tr>';
 		echo '</tbody></table>';
 		submit_button( 'Create/Update Mapping' );
 		echo '</form>';
@@ -1624,17 +1820,17 @@ final class PIB_Admin_Tools {
 	}
 
 	/**
-	 * Build advanced panel URL.
+	 * Build observability panel URL.
 	 *
 	 * @param string               $panel Panel slug.
 	 * @param array<string, mixed> $extra Extra query args.
 	 *
 	 * @return string
 	 */
-	private function advanced_panel_url( $panel, $extra = array() ) {
+	private function observability_panel_url( $panel, $extra = array() ) {
 		$panel = sanitize_key( (string) $panel );
 		if ( '' === $panel ) {
-			$panel = 'routes';
+			$panel = 'summary';
 		}
 
 		$extra = is_array( $extra ) ? $extra : array();
@@ -1645,7 +1841,7 @@ final class PIB_Admin_Tools {
 			$extra
 		);
 
-		return $this->tab_url( 'advanced', $args );
+		return $this->tab_url( 'observability', $args );
 	}
 
 	/**

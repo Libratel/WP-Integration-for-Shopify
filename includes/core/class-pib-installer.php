@@ -16,7 +16,7 @@ final class PIB_Installer {
 	/**
 	 * Internal schema/version marker.
 	 */
-	const DB_VERSION = '1.1.0';
+	const DB_VERSION = '1.2.0';
 
 	/**
 	 * Role slug for Shopify customer identities.
@@ -36,6 +36,7 @@ final class PIB_Installer {
 	public static function activate() {
 		self::create_mapping_table();
 		self::create_audit_log_table();
+		self::create_verification_table();
 		self::initialize_settings();
 		self::ensure_roles();
 		self::maybe_migrate_default_customer_role();
@@ -62,6 +63,7 @@ final class PIB_Installer {
 		if ( self::DB_VERSION !== (string) $current ) {
 			self::create_mapping_table();
 			self::create_audit_log_table();
+			self::create_verification_table();
 			self::initialize_settings();
 			update_option( 'pib_db_version', self::DB_VERSION );
 		}
@@ -131,6 +133,47 @@ final class PIB_Installer {
 			KEY created_at_idx (created_at),
 			KEY user_id_idx (user_id),
 			KEY customer_idx (shopify_customer_id)
+		) {$charset_collate};";
+
+		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+		dbDelta( $sql );
+	}
+
+	/**
+	 * Create first-time verification token table.
+	 *
+	 * @return void
+	 */
+	private static function create_verification_table() {
+		global $wpdb;
+
+		$table_name      = $wpdb->prefix . 'pib_verification_tokens';
+		$charset_collate = $wpdb->get_charset_collate();
+
+		$sql = "CREATE TABLE {$table_name} (
+			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			mapping_id BIGINT UNSIGNED NOT NULL,
+			wp_user_id BIGINT UNSIGNED NOT NULL,
+			email VARCHAR(190) NOT NULL DEFAULT '',
+			token_hash CHAR(64) NOT NULL,
+			status VARCHAR(24) NOT NULL DEFAULT 'issued',
+			expires_at DATETIME NOT NULL,
+			dest VARCHAR(255) NOT NULL DEFAULT '/dashboard',
+			shopify_customer_id VARCHAR(64) NOT NULL DEFAULT '',
+			company_id VARCHAR(64) NOT NULL DEFAULT '',
+			request_ip VARCHAR(64) NOT NULL DEFAULT '',
+			request_ua_hash CHAR(64) NOT NULL DEFAULT '',
+			sent_at DATETIME NULL DEFAULT NULL,
+			consumed_at DATETIME NULL DEFAULT NULL,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			PRIMARY KEY (id),
+			UNIQUE KEY token_hash_unique (token_hash),
+			KEY mapping_idx (mapping_id),
+			KEY wp_user_idx (wp_user_id),
+			KEY status_idx (status),
+			KEY expires_idx (expires_at),
+			KEY created_at_idx (created_at)
 		) {$charset_collate};";
 
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';

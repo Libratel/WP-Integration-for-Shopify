@@ -221,8 +221,26 @@ final class PIB_Auth_Intake {
 		if ( isset( $verified_claims['wp_user_id'] ) ) {
 			$claims['wp_user_id'] = absint( $verified_claims['wp_user_id'] );
 		}
+		if ( array_key_exists( 'email_verified', $verified_claims ) ) {
+			$claims['email_verified'] = $verified_claims['email_verified'];
+		}
+		if ( isset( $verified_claims['email_verification_source'] ) && is_scalar( $verified_claims['email_verification_source'] ) ) {
+			$claims['email_verification_source'] = sanitize_text_field( (string) $verified_claims['email_verification_source'] );
+		}
+		if ( isset( $verified_claims['email_verification_checked_at'] ) ) {
+			$claims['email_verification_checked_at'] = absint( $verified_claims['email_verification_checked_at'] );
+		}
 
 		$user = $this->resolve_wordpress_user( $claims );
+		if ( is_wp_error( $user ) ) {
+			$this->fail_and_exit(
+				$user->get_error_code(),
+				$user->get_error_message(),
+				403,
+				$settings,
+				$claims
+			);
+		}
 		if ( ! $user instanceof WP_User ) {
 			$this->fail_and_exit(
 				'pib_user_not_found',
@@ -248,7 +266,7 @@ final class PIB_Auth_Intake {
 	 * Resolve WP user from verified claims.
 	 *
 	 * @param array<string, mixed> $claims Verified claim payload.
-	 * @return WP_User|false
+	 * @return WP_User|WP_Error|false
 	 */
 	private function resolve_wordpress_user( $claims ) {
 		$user = false;
@@ -263,7 +281,7 @@ final class PIB_Auth_Intake {
 		/**
 		 * Allow mapping module to resolve the stable user from verified claims.
 		 *
-		 * @param WP_User|false        $user   Current resolved user.
+		 * @param WP_User|WP_Error|false $user   Current resolved user.
 		 * @param array<string,mixed>  $claims Verified claim payload.
 		 */
 		return apply_filters( 'pib_resolve_user_from_claims', $user, $claims );
@@ -302,7 +320,10 @@ final class PIB_Auth_Intake {
 	 * @return void
 	 */
 	private function fail_and_exit( $code, $message, $status, $settings, $claims = array() ) {
-		PIB_Security::register_auth_failure( (int) $settings['auth_failure_window_minutes'] );
+		$code = sanitize_key( (string) $code );
+		if ( ! in_array( $code, array( 'pib_email_verification_required', 'pib_email_verification_rate_limited', 'pib_email_verification_send_failed' ), true ) ) {
+			PIB_Security::register_auth_failure( (int) $settings['auth_failure_window_minutes'] );
+		}
 		do_action( 'pib_auth_intake_failure', $code, $message, $status, $claims );
 
 		$failure_destination = PIB_Destination::safe_failure_destination(

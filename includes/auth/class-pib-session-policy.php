@@ -44,6 +44,21 @@ final class PIB_Session_Policy {
 	const META_BOUND_MAPPING_ID = 'pib_session_mapping_id';
 
 	/**
+	 * Meta key: user-agent hash bound to managed session.
+	 */
+	const META_BOUND_UA_HASH = 'pib_session_ua_hash';
+
+	/**
+	 * Meta key: IP-prefix fingerprint bound to managed session.
+	 */
+	const META_BOUND_IP_FINGERPRINT = 'pib_session_ip_fingerprint';
+
+	/**
+	 * Meta key: WP session token hash bound to managed session.
+	 */
+	const META_BOUND_WP_TOKEN_HASH = 'pib_session_wp_token_hash';
+
+	/**
 	 * Singleton.
 	 *
 	 * @var PIB_Session_Policy|null
@@ -121,6 +136,29 @@ final class PIB_Session_Policy {
 		update_user_meta( $user_id, self::META_BOUND_CUSTOMER_ID, $customer_id );
 		update_user_meta( $user_id, self::META_BOUND_COMPANY_ID, $company_id );
 		update_user_meta( $user_id, self::META_BOUND_MAPPING_ID, $mapping_id );
+
+		$settings       = $this->plugin->get_settings();
+		$ua_hash        = $this->current_user_agent_hash();
+		$ip_fingerprint = $this->current_ip_fingerprint( $settings );
+		$wp_token_hash  = $this->current_wp_session_token_hash();
+
+		if ( '' !== $ua_hash ) {
+			update_user_meta( $user_id, self::META_BOUND_UA_HASH, $ua_hash );
+		} else {
+			delete_user_meta( $user_id, self::META_BOUND_UA_HASH );
+		}
+
+		if ( '' !== $ip_fingerprint ) {
+			update_user_meta( $user_id, self::META_BOUND_IP_FINGERPRINT, $ip_fingerprint );
+		} else {
+			delete_user_meta( $user_id, self::META_BOUND_IP_FINGERPRINT );
+		}
+
+		if ( '' !== $wp_token_hash ) {
+			update_user_meta( $user_id, self::META_BOUND_WP_TOKEN_HASH, $wp_token_hash );
+		} else {
+			delete_user_meta( $user_id, self::META_BOUND_WP_TOKEN_HASH );
+		}
 	}
 
 	/**
@@ -198,6 +236,16 @@ final class PIB_Session_Policy {
 		if ( ! $this->session_identity_matches_binding( $user_id, $settings ) ) {
 			$this->expire_session(
 				'pib_session_identity_mismatch',
+				array(
+					'user_id' => $user_id,
+				)
+			);
+		}
+
+		$client_binding = $this->session_client_binding_matches( $user_id, $settings );
+		if ( is_wp_error( $client_binding ) ) {
+			$this->expire_session(
+				(string) $client_binding->get_error_code(),
 				array(
 					'user_id' => $user_id,
 				)
@@ -476,6 +524,180 @@ final class PIB_Session_Policy {
 	}
 
 	/**
+	 * Validate browser/session client binding for managed sessions.
+	 *
+	 * @param int                  $user_id  User ID.
+	 * @param array<string, mixed> $settings Plugin settings.
+	 *
+	 * @return true|WP_Error
+	 */
+	private function session_client_binding_matches( $user_id, $settings ) {
+		$user_id  = absint( $user_id );
+		$settings = is_array( $settings ) ? $settings : array();
+
+		if ( $user_id <= 0 ) {
+			return new WP_Error( 'pib_session_client_binding_mismatch', 'Invalid session user context.' );
+		}
+
+		if ( empty( $settings['session_client_fingerprint_enabled'] ) ) {
+			return true;
+		}
+
+		$current_ua_hash        = $this->current_user_agent_hash();
+		$current_ip_fingerprint = $this->current_ip_fingerprint( $settings );
+		$current_wp_token_hash  = $this->current_wp_session_token_hash();
+
+		$bound_ua_hash        = trim( (string) get_user_meta( $user_id, self::META_BOUND_UA_HASH, true ) );
+		$bound_ip_fingerprint = trim( (string) get_user_meta( $user_id, self::META_BOUND_IP_FINGERPRINT, true ) );
+		$bound_wp_token_hash  = trim( (string) get_user_meta( $user_id, self::META_BOUND_WP_TOKEN_HASH, true ) );
+
+		// Backfill binding for older sessions or first protected request after login.
+		if ( '' === $bound_ua_hash && '' !== $current_ua_hash ) {
+			update_user_meta( $user_id, self::META_BOUND_UA_HASH, $current_ua_hash );
+			$bound_ua_hash = $current_ua_hash;
+		}
+		if ( '' === $bound_ip_fingerprint && '' !== $current_ip_fingerprint ) {
+			update_user_meta( $user_id, self::META_BOUND_IP_FINGERPRINT, $current_ip_fingerprint );
+			$bound_ip_fingerprint = $current_ip_fingerprint;
+		}
+		if ( '' === $bound_wp_token_hash && '' !== $current_wp_token_hash ) {
+			update_user_meta( $user_id, self::META_BOUND_WP_TOKEN_HASH, $current_wp_token_hash );
+			$bound_wp_token_hash = $current_wp_token_hash;
+		}
+
+		if ( '' !== $bound_ua_hash && '' !== $current_ua_hash && ! hash_equals( $bound_ua_hash, $current_ua_hash ) ) {
+			return new WP_Error( 'pib_session_client_binding_mismatch', 'Session user-agent binding changed.' );
+		}
+
+		if ( '' !== $bound_ip_fingerprint && '' !== $current_ip_fingerprint && ! hash_equals( $bound_ip_fingerprint, $current_ip_fingerprint ) ) {
+			return new WP_Error( 'pib_session_client_binding_mismatch', 'Session IP binding changed.' );
+		}
+
+		if ( '' !== $bound_wp_token_hash && '' !== $current_wp_token_hash && ! hash_equals( $bound_wp_token_hash, $current_wp_token_hash ) ) {
+			return new WP_Error( 'pib_session_client_binding_mismatch', 'Session token binding changed.' );
+		}
+
+		return true;
+	}
+
+	/**
+	 * Get hash of current request user agent.
+	 *
+	 * @return string
+	 */
+	private function current_user_agent_hash() {
+		$user_agent = '';
+		if ( isset( $_SERVER['HTTP_USER_AGENT'] ) ) {
+			$user_agent = sanitize_text_field( (string) wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) );
+		}
+
+		if ( '' === $user_agent ) {
+			return '';
+		}
+
+		return hash( 'sha256', $user_agent );
+	}
+
+	/**
+	 * Get hash of active WordPress session token.
+	 *
+	 * @return string
+	 */
+	private function current_wp_session_token_hash() {
+		if ( ! is_user_logged_in() ) {
+			return '';
+		}
+
+		$session_token = wp_get_session_token();
+		if ( ! is_string( $session_token ) || '' === $session_token ) {
+			return '';
+		}
+
+		return hash( 'sha256', $session_token );
+	}
+
+	/**
+	 * Build masked IP-prefix fingerprint for the request.
+	 *
+	 * @param array<string, mixed> $settings Plugin settings.
+	 *
+	 * @return string
+	 */
+	private function current_ip_fingerprint( $settings ) {
+		$settings = is_array( $settings ) ? $settings : array();
+		$ip       = PIB_Security::client_ip();
+		if ( '' === $ip ) {
+			return '';
+		}
+
+		$packed = @inet_pton( $ip );
+		if ( false === $packed || ! is_string( $packed ) ) {
+			return '';
+		}
+
+		$is_v4      = strlen( $packed ) === 4;
+		$prefix_max = $is_v4 ? 32 : 128;
+		$prefix_min = $is_v4 ? 16 : 32;
+		$prefix_key = $is_v4 ? 'session_ip_prefix_v4' : 'session_ip_prefix_v6';
+		$prefix     = isset( $settings[ $prefix_key ] ) ? absint( $settings[ $prefix_key ] ) : ( $is_v4 ? 24 : 56 );
+		$prefix     = max( $prefix_min, min( $prefix_max, $prefix ) );
+
+		$masked = $this->mask_ip_binary( $packed, $prefix );
+		if ( '' === $masked ) {
+			return '';
+		}
+
+		return bin2hex( $masked ) . '/' . $prefix;
+	}
+
+	/**
+	 * Apply prefix mask to packed binary IP address.
+	 *
+	 * @param string $packed_ip   Packed binary IP address.
+	 * @param int    $prefix_bits Prefix length in bits.
+	 *
+	 * @return string
+	 */
+	private function mask_ip_binary( $packed_ip, $prefix_bits ) {
+		$packed_ip   = is_string( $packed_ip ) ? $packed_ip : '';
+		$prefix_bits = max( 0, absint( $prefix_bits ) );
+		if ( '' === $packed_ip ) {
+			return '';
+		}
+
+		$unpacked = unpack( 'C*', $packed_ip );
+		if ( ! is_array( $unpacked ) ) {
+			return '';
+		}
+
+		$bytes = array_values( $unpacked );
+		if ( empty( $bytes ) ) {
+			return '';
+		}
+
+		$total_bits = count( $bytes ) * 8;
+		$prefix_bits = min( $prefix_bits, $total_bits );
+		$full_bytes  = intdiv( $prefix_bits, 8 );
+		$remainder   = $prefix_bits % 8;
+
+		for ( $index = 0; $index < count( $bytes ); $index++ ) {
+			if ( $index < $full_bytes ) {
+				continue;
+			}
+
+			if ( $index === $full_bytes && $remainder > 0 ) {
+				$mask          = ( 0xFF << ( 8 - $remainder ) ) & 0xFF;
+				$bytes[ $index ] = $bytes[ $index ] & $mask;
+				continue;
+			}
+
+			$bytes[ $index ] = 0;
+		}
+
+		return pack( 'C*', ...$bytes );
+	}
+
+	/**
 	 * Clear managed-session user meta markers.
 	 *
 	 * @param int $user_id User ID.
@@ -494,6 +716,9 @@ final class PIB_Session_Policy {
 		delete_user_meta( $user_id, self::META_BOUND_CUSTOMER_ID );
 		delete_user_meta( $user_id, self::META_BOUND_COMPANY_ID );
 		delete_user_meta( $user_id, self::META_BOUND_MAPPING_ID );
+		delete_user_meta( $user_id, self::META_BOUND_UA_HASH );
+		delete_user_meta( $user_id, self::META_BOUND_IP_FINGERPRINT );
+		delete_user_meta( $user_id, self::META_BOUND_WP_TOKEN_HASH );
 	}
 
 	/**

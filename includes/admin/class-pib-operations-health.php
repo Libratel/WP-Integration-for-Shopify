@@ -114,12 +114,36 @@ final class PIB_Operations_Health {
 		$settings             = is_array( $settings ) ? $settings : $this->plugin->get_settings();
 		$settings_diagnostics = is_array( $settings_diagnostics ) ? $settings_diagnostics : PIB_Settings_Contract::diagnostics( $settings );
 		$checks               = array();
+		$setup_url            = $this->settings_page_url();
+		$mappings_url         = $this->tools_panel_url( 'mappings' );
+		$failures_url         = $this->tools_panel_url( 'failures' );
+		$extensions_url       = $this->tools_panel_url( 'observability', 'extensions' );
+		$logs_url             = $this->tools_panel_url( 'observability', 'logs' );
+		$token_url            = $this->tools_panel_url( 'observability', 'token' );
 
 		$settings_status = isset( $settings_diagnostics['status'] ) ? sanitize_key( (string) $settings_diagnostics['status'] ) : 'healthy';
 		if ( 'action_needed' === $settings_status ) {
-			$this->add_check( $checks, 'settings_contract', 'critical', 'Settings diagnostics report critical configuration issues.' );
+			$this->add_check(
+				$checks,
+				'settings_contract',
+				'critical',
+				'Settings diagnostics report critical configuration issues.',
+				array(
+					'action_label' => 'Open Setup',
+					'action_url'   => $setup_url,
+				)
+			);
 		} elseif ( 'warnings' === $settings_status ) {
-			$this->add_check( $checks, 'settings_contract', 'warning', 'Settings diagnostics report non-blocking warnings.' );
+			$this->add_check(
+				$checks,
+				'settings_contract',
+				'warning',
+				'Settings diagnostics report non-blocking warnings.',
+				array(
+					'action_label' => 'Open Setup',
+					'action_url'   => $setup_url,
+				)
+			);
 		} else {
 			$this->add_check( $checks, 'settings_contract', 'ok', 'Settings diagnostics are healthy.' );
 		}
@@ -128,7 +152,16 @@ final class PIB_Operations_Health {
 		if ( $mapping_table_exists ) {
 			$this->add_check( $checks, 'mapping_table', 'ok', 'Customer mapping table is available.' );
 		} else {
-			$this->add_check( $checks, 'mapping_table', 'critical', 'Customer mapping table is missing. Re-run plugin activation/upgrade.' );
+			$this->add_check(
+				$checks,
+				'mapping_table',
+				'critical',
+				'Customer mapping table is missing. Re-run plugin activation/upgrade.',
+				array(
+					'action_label' => 'Open Setup',
+					'action_url'   => $setup_url,
+				)
+			);
 		}
 
 		$audit_table_exists = $this->table_exists( PIB_Audit_Log::table_name() );
@@ -136,14 +169,51 @@ final class PIB_Operations_Health {
 		if ( $audit_table_exists ) {
 			$this->add_check( $checks, 'audit_table', 'ok', 'Audit log table is available.' );
 		} elseif ( $audit_enabled ) {
-			$this->add_check( $checks, 'audit_table', 'critical', 'Audit logging is enabled but audit table is missing.' );
+			$this->add_check(
+				$checks,
+				'audit_table',
+				'critical',
+				'Audit logging is enabled but audit table is missing.',
+				array(
+					'action_label' => 'Open Setup',
+					'action_url'   => $setup_url,
+				)
+			);
 		} else {
 			$this->add_check( $checks, 'audit_table', 'ok', 'Audit logging is disabled; audit table availability is optional.' );
 		}
 
+		$verification_table_exists = class_exists( 'PIB_Registration_Verifier' ) && $this->table_exists( PIB_Registration_Verifier::table_name() );
+		$first_time_verification   = ! empty( $settings['first_time_verification_enabled'] );
+		if ( $verification_table_exists ) {
+			$this->add_check( $checks, 'verification_table', 'ok', 'Verification token table is available.' );
+		} elseif ( $first_time_verification ) {
+			$this->add_check(
+				$checks,
+				'verification_table',
+				'critical',
+				'First-time verification is enabled but verification token table is missing.',
+				array(
+					'action_label' => 'Open Setup',
+					'action_url'   => $setup_url,
+				)
+			);
+		} else {
+			$this->add_check( $checks, 'verification_table', 'ok', 'First-time verification is disabled; verification token table is optional.' );
+		}
+
 		$next_trim = wp_next_scheduled( PIB_Audit_Log::TRIM_CRON_HOOK );
 		if ( $audit_enabled && false === $next_trim ) {
-			$this->add_check( $checks, 'audit_trim_schedule', 'warning', 'Audit log trim schedule is missing; retention cleanup is not automated.' );
+			$this->add_check(
+				$checks,
+				'audit_trim_schedule',
+				'warning',
+				'Audit log trim schedule is missing; retention cleanup is not automated.',
+				array(
+					'action_label' => 'Open Audit Logs',
+					'action_url'   => $logs_url,
+				)
+			);
 		} elseif ( $audit_enabled ) {
 			$this->add_check( $checks, 'audit_trim_schedule', 'ok', 'Audit log trim schedule is active.' );
 		} else {
@@ -152,10 +222,20 @@ final class PIB_Operations_Health {
 
 		$registry = $this->plugin->get_module_registry();
 		if ( ! $registry instanceof PIB_Module_Registry ) {
-			$this->add_check( $checks, 'module_registry', 'critical', 'Module registry is unavailable.' );
+			$this->add_check(
+				$checks,
+				'module_registry',
+				'critical',
+				'Module registry is unavailable.',
+				array(
+					'action_label' => 'Open Extensions',
+					'action_url'   => $extensions_url,
+				)
+			);
 		} else {
 			$required           = array(
 				'settings',
+				'registration_verifier',
 				'customer_mapping',
 				'protected_access',
 				'spark_launch',
@@ -167,6 +247,7 @@ final class PIB_Operations_Health {
 				'session_policy',
 				'admin_tools',
 				'auth_intake',
+				'bridge_simulator',
 				'signin_link',
 			);
 			$registered_modules = array_map( 'sanitize_key', $registry->all_module_ids() );
@@ -177,7 +258,11 @@ final class PIB_Operations_Health {
 					$checks,
 					'module_registry_required',
 					'critical',
-					'Required modules are not registered: ' . implode( ', ', $missing_defs ) . '.'
+					'Required modules are not registered: ' . implode( ', ', $missing_defs ) . '.',
+					array(
+						'action_label' => 'Open Extensions',
+						'action_url'   => $extensions_url,
+					)
 				);
 			} else {
 				$missing_booted = array();
@@ -192,7 +277,11 @@ final class PIB_Operations_Health {
 						$checks,
 						'module_registry_boot',
 						'warning',
-						'Some required modules were registered but not booted: ' . implode( ', ', $missing_booted ) . '.'
+						'Some required modules were registered but not booted: ' . implode( ', ', $missing_booted ) . '.',
+						array(
+							'action_label' => 'Open Extensions',
+							'action_url'   => $extensions_url,
+						)
 					);
 				} else {
 					$this->add_check( $checks, 'module_registry_boot', 'ok', 'All required modules are registered and booted.' );
@@ -202,29 +291,110 @@ final class PIB_Operations_Health {
 
 		$mapping_counts = $this->mapping_counts();
 		if ( isset( $mapping_counts['total'] ) && 0 === absint( $mapping_counts['total'] ) ) {
-			$this->add_check( $checks, 'mapping_population', 'warning', 'No Shopify customer mappings exist yet.' );
+			$this->add_check(
+				$checks,
+				'mapping_population',
+				'warning',
+				'No Shopify customer mappings exist yet.',
+				array(
+					'action_label' => 'Open Mappings',
+					'action_url'   => $mappings_url,
+				)
+			);
 		} elseif ( isset( $mapping_counts['active'] ) && 0 === absint( $mapping_counts['active'] ) ) {
-			$this->add_check( $checks, 'mapping_population', 'warning', 'Mappings exist but none are currently active.' );
+			$this->add_check(
+				$checks,
+				'mapping_population',
+				'warning',
+				'Mappings exist but none are currently active.',
+				array(
+					'action_label' => 'Open Mappings',
+					'action_url'   => $mappings_url,
+				)
+			);
 		} else {
 			$this->add_check( $checks, 'mapping_population', 'ok', 'Active customer mappings are present.' );
 		}
 
 		if ( isset( $mapping_counts['blocked'], $mapping_counts['active'] ) && absint( $mapping_counts['blocked'] ) > absint( $mapping_counts['active'] ) ) {
-			$this->add_check( $checks, 'mapping_blocked_ratio', 'warning', 'Blocked mappings outnumber active mappings.' );
+			$this->add_check(
+				$checks,
+				'mapping_blocked_ratio',
+				'warning',
+				'Blocked mappings outnumber active mappings.',
+				array(
+					'action_label' => 'Open Failures',
+					'action_url'   => $failures_url,
+				)
+			);
 		} else {
 			$this->add_check( $checks, 'mapping_blocked_ratio', 'ok', 'Blocked/active mapping ratio is within expected range.' );
+		}
+
+		if ( isset( $mapping_counts['pending_verification'] ) && absint( $mapping_counts['pending_verification'] ) > 0 ) {
+			$this->add_check(
+				$checks,
+				'mapping_pending_verification',
+				'warning',
+				'Some mappings are awaiting first-time email verification.',
+				array(
+					'action_label' => 'Open Mappings',
+					'action_url'   => $mappings_url,
+				)
+			);
+		} else {
+			$this->add_check( $checks, 'mapping_pending_verification', 'ok', 'No mappings are waiting on email verification.' );
 		}
 
 		$auth_counts = $this->auth_window_counts( 24 );
 		$failures    = isset( $auth_counts['failure'] ) ? absint( $auth_counts['failure'] ) : 0;
 		$successes   = isset( $auth_counts['success'] ) ? absint( $auth_counts['success'] ) : 0;
+		$activity_total = $failures + $successes;
 		$total       = max( 1, $failures + $successes );
 		$fail_ratio  = $failures / $total;
 
+		if ( 0 === $activity_total ) {
+			$this->add_check(
+				$checks,
+				'auth_activity_window',
+				'warning',
+				'No auth handoff activity was observed in the last 24 hours.',
+				array(
+					'action_label' => 'Open Token Check',
+					'action_url'   => $token_url,
+				)
+			);
+		} else {
+			$this->add_check(
+				$checks,
+				'auth_activity_window',
+				'ok',
+				sprintf( 'Auth handoff activity observed in the last 24 hours (%d total events).', $activity_total )
+			);
+		}
+
 		if ( $failures >= 50 || ( $failures >= 20 && $fail_ratio >= 0.70 ) ) {
-			$this->add_check( $checks, 'auth_failure_window', 'critical', 'Auth failures are unusually high in the last 24 hours.' );
+			$this->add_check(
+				$checks,
+				'auth_failure_window',
+				'critical',
+				'Auth failures are unusually high in the last 24 hours.',
+				array(
+					'action_label' => 'Open Failures',
+					'action_url'   => $failures_url,
+				)
+			);
 		} elseif ( $failures >= 10 && $fail_ratio >= 0.50 ) {
-			$this->add_check( $checks, 'auth_failure_window', 'warning', 'Auth failure ratio is elevated in the last 24 hours.' );
+			$this->add_check(
+				$checks,
+				'auth_failure_window',
+				'warning',
+				'Auth failure ratio is elevated in the last 24 hours.',
+				array(
+					'action_label' => 'Open Failures',
+					'action_url'   => $failures_url,
+				)
+			);
 		} else {
 			$this->add_check( $checks, 'auth_failure_window', 'ok', 'Auth success/failure pattern is within expected range.' );
 		}
@@ -284,6 +454,7 @@ final class PIB_Operations_Health {
 				'active'   => 0,
 				'blocked'  => 0,
 				'archived' => 0,
+				'pending_verification' => 0,
 			);
 		}
 
@@ -292,6 +463,7 @@ final class PIB_Operations_Health {
 			'active'   => absint( $module->count_mappings( array( 'status' => 'active' ) ) ),
 			'blocked'  => absint( $module->count_mappings( array( 'status' => 'blocked' ) ) ),
 			'archived' => absint( $module->count_mappings( array( 'status' => 'archived' ) ) ),
+			'pending_verification' => absint( $module->count_mappings( array( 'status' => 'pending_verification' ) ) ),
 		);
 	}
 
@@ -391,16 +563,26 @@ final class PIB_Operations_Health {
 	 * @param array<int, array<string,mixed>> $checks  Checks list.
 	 * @param string                          $id      Check ID.
 	 * @param string                          $level   Check level.
-	 * @param string                          $message  Check message.
+	 * @param string                          $message Check message.
+	 * @param array<string, string>           $action  Optional action metadata.
 	 *
 	 * @return void
 	 */
-	private function add_check( &$checks, $id, $level, $message ) {
-		$checks[] = array(
+	private function add_check( &$checks, $id, $level, $message, $action = array() ) {
+		$check = array(
 			'id'      => sanitize_key( (string) $id ),
 			'level'   => sanitize_key( (string) $level ),
 			'message' => sanitize_text_field( (string) $message ),
 		);
+		if ( is_array( $action ) ) {
+			$action_label = isset( $action['action_label'] ) ? sanitize_text_field( (string) $action['action_label'] ) : '';
+			$action_url   = isset( $action['action_url'] ) ? esc_url_raw( (string) $action['action_url'] ) : '';
+			if ( '' !== $action_label && '' !== $action_url ) {
+				$check['action_label'] = $action_label;
+				$check['action_url']   = $action_url;
+			}
+		}
+		$checks[] = $check;
 	}
 
 	/**
@@ -408,7 +590,7 @@ final class PIB_Operations_Health {
 	 *
 	 * @param mixed $checks Candidate checks.
 	 *
-	 * @return array<int, array<string,string>>
+	 * @return array<int, array<string,mixed>>
 	 */
 	private function normalize_checks( $checks ) {
 		if ( ! is_array( $checks ) ) {
@@ -432,20 +614,63 @@ final class PIB_Operations_Health {
 				$level = 'ok';
 			}
 
-			$normalized[] = array(
+			$normalized_check = array(
 				'id'      => $id,
 				'level'   => $level,
 				'message' => $message,
 			);
+			$action_label = isset( $check['action_label'] ) ? sanitize_text_field( (string) $check['action_label'] ) : '';
+			$action_url   = isset( $check['action_url'] ) ? esc_url_raw( (string) $check['action_url'] ) : '';
+			if ( '' !== $action_label && '' !== $action_url ) {
+				$normalized_check['action_label'] = $action_label;
+				$normalized_check['action_url']   = $action_url;
+			}
+			$normalized[] = $normalized_check;
 		}
 
 		return $normalized;
 	}
 
 	/**
+	 * Build Setup admin URL.
+	 *
+	 * @return string
+	 */
+	private function settings_page_url() {
+		return add_query_arg(
+			array(
+				'page' => 'pib-settings',
+			),
+			admin_url( 'admin.php' )
+		);
+	}
+
+	/**
+	 * Build Tools admin URL.
+	 *
+	 * @param string $tab   Tab key.
+	 * @param string $panel Optional panel key.
+	 *
+	 * @return string
+	 */
+	private function tools_panel_url( $tab = 'observability', $panel = '' ) {
+		$tab   = sanitize_key( (string) $tab );
+		$panel = sanitize_key( (string) $panel );
+		$args  = array(
+			'page' => 'pib-tools',
+			'tab'  => '' !== $tab ? $tab : 'observability',
+		);
+		if ( '' !== $panel ) {
+			$args['panel'] = $panel;
+		}
+
+		return add_query_arg( $args, admin_url( 'admin.php' ) );
+	}
+
+	/**
 	 * Compute top-level status from checks.
 	 *
-	 * @param array<int, array<string,string>> $checks Check entries.
+	 * @param array<int, array<string,mixed>> $checks Check entries.
 	 *
 	 * @return string
 	 */

@@ -338,10 +338,17 @@ final class PIB_Settings {
 
 		$settings    = $this->plugin->get_settings();
 		$diagnostics = PIB_Settings_Contract::diagnostics( $settings );
-		$core_keys       = $this->core_setup_keys();
-		$policy_keys     = $this->setup_policy_keys();
-		$excluded_keys   = array_values( array_unique( array_merge( $core_keys, $policy_keys ) ) );
 		$can_bridge_test = $this->can_run_bridge_simulator_quick( $settings );
+		$view            = sanitize_key( $this->request_scalar_text( 'view' ) );
+		$module          = sanitize_key( $this->request_scalar_text( 'module' ) );
+		if ( ! in_array( $view, array( 'home', 'module', 'toolkit' ), true ) ) {
+			$view = 'home';
+		}
+
+		$modules = $this->setup_modules_catalog();
+		if ( 'module' === $view && ! isset( $modules[ $module ] ) ) {
+			$view = 'home';
+		}
 		$this->render_settings_page_assets();
 		?>
 		<div class="wrap pib-settings-wrap">
@@ -349,36 +356,36 @@ final class PIB_Settings {
 			<p class="pib-page-subtitle">Set up JWT bridge login from Shopify and validate handoff behavior in one place.</p>
 			<?php $this->render_workspace_navigation(); ?>
 			<?php settings_errors( 'pib_settings_group' ); ?>
-			<div class="pib-settings-grid">
+			<div class="pib-settings-grid<?php echo 'home' === $view ? '' : ' is-single'; ?>">
 				<div class="pib-settings-main">
-					<form action="options.php" method="post" class="pib-settings-form">
-						<?php
-						settings_fields( 'pib_settings_group' );
-						$this->render_core_setup_panel( $settings );
-						$this->render_policy_setup_panel( $settings );
-						?>
-						<details class="pib-settings-section">
-							<summary>Advanced Settings (Optional)</summary>
-							<div class="pib-settings-section-body">
-								<p class="pib-quiet-note">Leave these unchanged unless you need custom behavior.</p>
-								<?php $this->render_settings_sections_accordion( $settings, $excluded_keys ); ?>
-							</div>
-						</details>
-						<?php
-						submit_button( 'Save Settings' );
-						?>
-					</form>
+					<?php if ( 'module' === $view ) : ?>
+						<?php $this->render_setup_module_view( $settings, $module ); ?>
+					<?php elseif ( 'toolkit' === $view ) : ?>
+						<?php $this->render_setup_toolkit_view( $settings ); ?>
+					<?php else : ?>
+						<form action="options.php" method="post" class="pib-settings-form">
+							<?php
+							settings_fields( 'pib_settings_group' );
+							$this->render_core_setup_panel( $settings );
+							$this->render_setup_module_cards( $settings );
+							$this->render_hidden_checkbox_preserve_inputs( $settings, $this->core_setup_keys() );
+							submit_button( 'Save Settings' );
+							?>
+						</form>
+					<?php endif; ?>
 				</div>
+				<?php if ( 'home' === $view ) : ?>
 				<div class="pib-settings-rail">
 					<?php $this->render_setup_status_rail( $settings, $diagnostics, $can_bridge_test ); ?>
 				</div>
+				<?php endif; ?>
 			</div>
 		</div>
 		<?php
 	}
 
 	/**
-	 * Render one advanced troubleshooting panel for Tools > Advanced.
+	 * Render one troubleshooting panel for Tools > Observability.
 	 *
 	 * @param string $panel           Panel slug.
 	 * @param string $form_action_url Optional form action URL for POST-driven tools.
@@ -462,20 +469,23 @@ final class PIB_Settings {
 				border-color: #2271b1;
 				color: #135e96;
 			}
-			.pib-settings-wrap .pib-settings-grid {
-				display: grid;
-				grid-template-columns: minmax(0, 1fr) 320px;
-				gap: 16px;
-				align-items: start;
-			}
-			.pib-settings-wrap .pib-core-card,
-			.pib-settings-wrap .pib-settings-section,
-			.pib-settings-wrap .pib-rail-card {
-				background: #fff;
-				border: 1px solid #dcdcde;
-				border-radius: 8px;
-				margin: 0 0 12px 0;
-			}
+				.pib-settings-wrap .pib-settings-grid {
+					display: grid;
+					grid-template-columns: minmax(0, 1fr) 320px;
+					gap: 16px;
+					align-items: start;
+				}
+				.pib-settings-wrap .pib-settings-grid.is-single {
+					grid-template-columns: minmax(0, 1fr);
+				}
+				.pib-settings-wrap .pib-core-card,
+				.pib-settings-wrap .pib-settings-section,
+				.pib-settings-wrap .pib-rail-card {
+					background: #fff;
+					border: 1px solid #dcdcde;
+					border-radius: 8px;
+					margin: 0 0 12px 0;
+				}
 			.pib-settings-wrap .pib-settings-main {
 				min-width: 0;
 			}
@@ -583,20 +593,50 @@ final class PIB_Settings {
 				font-size: 12px;
 				margin-bottom: 0;
 			}
-			.pib-settings-wrap .pib-rail-steps {
-				margin: 8px 0 0 18px;
-			}
-			.pib-settings-wrap .pib-rail-steps li {
-				margin-bottom: 8px;
-			}
-			@media (max-width: 1180px) {
-				.pib-settings-wrap .pib-settings-grid {
-					grid-template-columns: minmax(0, 1fr);
+				.pib-settings-wrap .pib-rail-steps {
+					margin: 8px 0 0 18px;
 				}
-				.pib-settings-wrap .pib-settings-rail {
-					position: static;
+				.pib-settings-wrap .pib-rail-steps li {
+					margin-bottom: 8px;
 				}
-			}
+				.pib-settings-wrap .pib-module-grid {
+					display: grid;
+					grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+					gap: 12px;
+				}
+				.pib-settings-wrap .pib-module-card {
+					border: 1px solid #dcdcde;
+					border-radius: 8px;
+					padding: 14px;
+					background: #fbfcfd;
+				}
+				.pib-settings-wrap .pib-module-card h3 {
+					margin: 0 0 8px 0;
+					font-size: 15px;
+				}
+				.pib-settings-wrap .pib-module-card p {
+					margin: 0 0 10px 0;
+					color: #3c434a;
+				}
+				.pib-settings-wrap .pib-module-meta {
+					font-size: 12px;
+					color: #646970;
+				}
+				.pib-settings-wrap .pib-back-row {
+					margin: 0 0 10px 0;
+				}
+				.pib-settings-wrap .pib-back-row a {
+					text-decoration: none;
+					font-weight: 500;
+				}
+				@media (max-width: 1180px) {
+					.pib-settings-wrap .pib-settings-grid {
+						grid-template-columns: minmax(0, 1fr);
+					}
+					.pib-settings-wrap .pib-settings-rail {
+						position: static;
+					}
+				}
 			@media (max-width: 900px) {
 				.pib-settings-wrap .pib-core-head {
 					display: block;
@@ -641,6 +681,8 @@ final class PIB_Settings {
 			'allow_token_query_fallback',
 			'auto_link_existing_users_by_email',
 			'auto_create_users',
+			'first_time_verification_enabled',
+			'first_time_auto_activate_from_verified_claim',
 			'new_user_role',
 			'require_managed_session_for_protected_routes',
 		);
@@ -655,12 +697,12 @@ final class PIB_Settings {
 		$links = array(
 			array(
 				'label'    => 'Setup',
-				'url'      => $this->settings_tool_url(),
+				'url'      => $this->settings_tool_url( 'home' ),
 				'is_active'=> true,
 			),
 			array(
 				'label'    => 'Operations',
-				'url'      => $this->tools_tab_url( 'overview' ),
+				'url'      => $this->tools_tab_url( 'observability', 'summary' ),
 				'is_active'=> false,
 			),
 		);
@@ -673,6 +715,362 @@ final class PIB_Settings {
 			<?php endforeach; ?>
 		</nav>
 		<?php
+	}
+
+	/**
+	 * Define setup modules displayed on the simplified setup workspace.
+	 *
+	 * @return array<string, array<string, mixed>>
+	 */
+	private function setup_modules_catalog() {
+		$core_keys   = $this->core_setup_keys();
+		$policy_keys = $this->setup_policy_keys();
+
+		return array(
+			'bridge_policy' => array(
+				'title'          => 'Bridge Policy',
+				'description'    => 'Recommended defaults for destinations, mapping behavior, and managed session gating.',
+				'keys'           => $policy_keys,
+				'actions_section'=> 'routing_access',
+			),
+			'user_mapping_advanced' => array(
+				'title'          => 'User Mapping Advanced',
+				'description'    => 'First-time verification timing controls and advanced mapping behavior.',
+				'section'        => 'user_mapping',
+				'exclude_keys'   => $policy_keys,
+				'actions_section'=> 'user_mapping',
+			),
+			'identity_auth_advanced' => array(
+				'title'          => 'Identity/Auth Advanced',
+				'description'    => 'Clock skew, state TTL, and sign-in label controls.',
+				'section'        => 'identity_auth_bridge',
+				'exclude_keys'   => array_merge( $core_keys, $policy_keys ),
+				'actions_section'=> 'identity_auth_bridge',
+			),
+			'routing_advanced' => array(
+				'title'          => 'Routing Advanced',
+				'description'    => 'Protected and unprotected route policy evaluation inputs.',
+				'section'        => 'routing_access',
+				'exclude_keys'   => $policy_keys,
+				'actions_section'=> 'routing_access',
+			),
+			'session_logout' => array(
+				'title'          => 'Session & Logout',
+				'description'    => 'Managed session lifetime, revalidation, and coordinated logout behavior.',
+				'section'        => 'session_logout',
+				'actions_section'=> 'session_logout',
+			),
+			'backorders' => array(
+				'title'          => 'Backorders',
+				'description'    => 'Backorders dashboard and external API connectivity controls.',
+				'section'        => 'backorders',
+				'actions_section'=> 'backorders',
+			),
+			'operations_audit' => array(
+				'title'          => 'Operations & Audit',
+				'description'    => 'Auth failure thresholds and audit logging retention settings.',
+				'section'        => 'operations_audit',
+				'exclude_keys'   => array( 'allow_token_query_fallback' ),
+				'actions_section'=> 'operations_audit',
+			),
+		);
+	}
+
+	/**
+	 * Resolve schema-backed field keys for a setup module.
+	 *
+	 * @param string $module_id Module identifier.
+	 *
+	 * @return array<int, string>
+	 */
+	private function setup_module_field_keys( $module_id ) {
+		$module_id = sanitize_key( (string) $module_id );
+		$catalog   = $this->setup_modules_catalog();
+		if ( ! isset( $catalog[ $module_id ] ) || ! is_array( $catalog[ $module_id ] ) ) {
+			return array();
+		}
+
+		$module = $catalog[ $module_id ];
+		if ( isset( $module['keys'] ) && is_array( $module['keys'] ) ) {
+			return array_values( array_filter( array_map( 'sanitize_key', $module['keys'] ) ) );
+		}
+
+		$section = isset( $module['section'] ) ? sanitize_key( (string) $module['section'] ) : '';
+		if ( '' === $section ) {
+			return array();
+		}
+
+		$exclude = isset( $module['exclude_keys'] ) && is_array( $module['exclude_keys'] )
+			? array_map( 'sanitize_key', $module['exclude_keys'] )
+			: array();
+
+		return $this->schema_keys_for_section( $section, $exclude );
+	}
+
+	/**
+	 * Collect UI field keys belonging to one schema section.
+	 *
+	 * @param string             $section_key Section key.
+	 * @param array<int, string> $exclude     Optional keys to exclude.
+	 *
+	 * @return array<int, string>
+	 */
+	private function schema_keys_for_section( $section_key, $exclude = array() ) {
+		$section_key = sanitize_key( (string) $section_key );
+		$exclude     = is_array( $exclude ) ? array_map( 'sanitize_key', $exclude ) : array();
+		$schema      = PIB_Settings_Contract::schema();
+		$keys        = array();
+
+		foreach ( $schema as $field_key => $definition ) {
+			$field_key = sanitize_key( (string) $field_key );
+			if ( '' === $field_key || ! is_array( $definition ) || empty( $definition['ui'] ) ) {
+				continue;
+			}
+			$field_section = isset( $definition['section'] ) ? sanitize_key( (string) $definition['section'] ) : '';
+			if ( $field_section !== $section_key ) {
+				continue;
+			}
+			if ( in_array( $field_key, $exclude, true ) ) {
+				continue;
+			}
+			$keys[] = $field_key;
+		}
+
+		return $keys;
+	}
+
+	/**
+	 * Render module cards on setup home.
+	 *
+	 * @param array<string, mixed> $settings Current settings.
+	 *
+	 * @return void
+	 */
+	private function render_setup_module_cards( $settings ) {
+		$settings = is_array( $settings ) ? $settings : array();
+		$catalog  = $this->setup_modules_catalog();
+		?>
+		<section class="pib-core-card">
+			<div class="pib-core-head">
+				<h2>Setup Modules</h2>
+				<span class="pib-pill">Minimal</span>
+			</div>
+			<div class="pib-settings-section-body">
+				<p class="pib-quiet-note">Optional controls are organized into focused modules to keep setup straightforward and scalable.</p>
+				<div class="pib-module-grid">
+					<section class="pib-module-card">
+						<h3>Bridge Toolkit</h3>
+						<p>Run Setup Assistant, Bridge Contract, Token Check, and Internal Simulator from one page.</p>
+						<p class="pib-module-meta">Troubleshooting and verification tools</p>
+						<a class="button" href="<?php echo esc_url( $this->settings_tool_url( 'toolkit' ) ); ?>">Open Toolkit</a>
+					</section>
+					<?php foreach ( $catalog as $module_id => $module ) : ?>
+						<?php
+						if ( ! is_array( $module ) ) {
+							continue;
+						}
+						$field_keys = $this->setup_module_field_keys( $module_id );
+						if ( empty( $field_keys ) ) {
+							continue;
+						}
+						$title       = isset( $module['title'] ) ? (string) $module['title'] : (string) $module_id;
+						$description = isset( $module['description'] ) ? (string) $module['description'] : '';
+						$filled      = 0;
+						$total       = count( $field_keys );
+						$schema      = PIB_Settings_Contract::schema();
+						foreach ( $field_keys as $field_key ) {
+							if ( ! isset( $schema[ $field_key ] ) || ! is_array( $schema[ $field_key ] ) ) {
+								continue;
+							}
+							$type = isset( $schema[ $field_key ]['type'] ) ? (string) $schema[ $field_key ]['type'] : 'text';
+							if ( 'checkbox' === $type ) {
+								$filled++;
+								continue;
+							}
+							if ( $this->is_setting_filled( $field_key, $settings, $schema[ $field_key ] ) ) {
+								$filled++;
+							}
+						}
+						?>
+						<section class="pib-module-card">
+							<h3><?php echo esc_html( $title ); ?></h3>
+							<p><?php echo esc_html( $description ); ?></p>
+							<p class="pib-module-meta"><?php echo esc_html( (string) $filled ); ?>/<?php echo esc_html( (string) $total ); ?> values configured</p>
+							<a class="button" href="<?php echo esc_url( $this->settings_tool_url( 'module', (string) $module_id ) ); ?>">Open Module</a>
+						</section>
+					<?php endforeach; ?>
+				</div>
+			</div>
+		</section>
+		<?php
+	}
+
+	/**
+	 * Render one module-specific setup view.
+	 *
+	 * @param array<string, mixed> $settings  Current settings.
+	 * @param string               $module_id Module identifier.
+	 *
+	 * @return void
+	 */
+	private function render_setup_module_view( $settings, $module_id ) {
+		$settings  = is_array( $settings ) ? $settings : array();
+		$module_id = sanitize_key( (string) $module_id );
+		$catalog   = $this->setup_modules_catalog();
+		if ( ! isset( $catalog[ $module_id ] ) || ! is_array( $catalog[ $module_id ] ) ) {
+			return;
+		}
+
+		$module      = $catalog[ $module_id ];
+		$title       = isset( $module['title'] ) ? (string) $module['title'] : $module_id;
+		$description = isset( $module['description'] ) ? (string) $module['description'] : '';
+		$field_keys  = $this->setup_module_field_keys( $module_id );
+		if ( empty( $field_keys ) ) {
+			return;
+		}
+		$schema = PIB_Settings_Contract::schema();
+		?>
+		<div class="pib-back-row">
+			<a href="<?php echo esc_url( $this->settings_tool_url( 'home' ) ); ?>">&larr; Back to Setup Home</a>
+		</div>
+		<form action="options.php" method="post" class="pib-settings-form">
+			<?php settings_fields( 'pib_settings_group' ); ?>
+			<section class="pib-core-card">
+				<div class="pib-core-head">
+					<h2><?php echo esc_html( $title ); ?></h2>
+					<span class="pib-pill">Module</span>
+				</div>
+				<div class="pib-settings-section-body">
+					<?php if ( '' !== $description ) : ?>
+						<p class="pib-quiet-note"><?php echo esc_html( $description ); ?></p>
+					<?php endif; ?>
+					<table class="form-table" role="presentation">
+						<tbody>
+							<?php foreach ( $field_keys as $field_key ) : ?>
+								<?php if ( ! isset( $schema[ $field_key ] ) || ! is_array( $schema[ $field_key ] ) ) : ?>
+									<?php continue; ?>
+								<?php endif; ?>
+								<tr>
+									<th scope="row"><?php echo esc_html( isset( $schema[ $field_key ]['label'] ) ? (string) $schema[ $field_key ]['label'] : $field_key ); ?></th>
+									<td><?php $this->render_schema_field( array( 'key' => $field_key, 'definition' => $schema[ $field_key ] ) ); ?></td>
+								</tr>
+							<?php endforeach; ?>
+						</tbody>
+					</table>
+					<?php
+					if ( isset( $module['actions_section'] ) ) {
+						$this->render_section_test_actions( (string) $module['actions_section'], $settings );
+					}
+					$this->render_hidden_checkbox_preserve_inputs( $settings, $field_keys );
+					submit_button( 'Save Settings' );
+					?>
+				</div>
+			</section>
+		</form>
+		<?php
+	}
+
+	/**
+	 * Render setup toolkit view with advanced bridge tools in one place.
+	 *
+	 * @param array<string, mixed> $settings Current settings.
+	 *
+	 * @return void
+	 */
+	private function render_setup_toolkit_view( $settings ) {
+		$settings       = is_array( $settings ) ? $settings : array();
+		$toolkit_url    = $this->settings_tool_url( 'toolkit' );
+		$token_test     = $this->maybe_validate_token( $settings );
+		$quick_dest     = isset( $settings['default_destination'] ) ? (string) $settings['default_destination'] : '/dashboard';
+		$shopify_test   = $this->build_shopify_test_url( $settings, $quick_dest );
+		$bridge_test    = $this->build_bridge_simulator_quick_url( $settings, $quick_dest );
+		$shopify_target = '' !== $shopify_test ? ' target="_blank" rel="noopener noreferrer"' : '';
+		$bridge_target  = '' !== $bridge_test ? ' target="_blank" rel="noopener noreferrer"' : '';
+		?>
+		<div class="pib-back-row">
+			<a href="<?php echo esc_url( $this->settings_tool_url( 'home' ) ); ?>">&larr; Back to Setup Home</a>
+		</div>
+		<section class="pib-core-card">
+			<div class="pib-core-head">
+				<h2>Bridge Toolkit</h2>
+				<span class="pib-pill">Expert</span>
+			</div>
+			<div class="pib-settings-section-body">
+				<p class="pib-quiet-note">Advanced validation and handoff tools are grouped here to keep Setup focused.</p>
+				<div class="pib-test-actions">
+					<?php if ( '' !== $shopify_test ) : ?>
+						<a class="button button-primary" href="<?php echo esc_url( $shopify_test ); ?>"<?php echo $shopify_target; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>>Test Shopify Bridge Route</a>
+					<?php endif; ?>
+					<?php if ( '' !== $bridge_test ) : ?>
+						<a class="button" href="<?php echo esc_url( $bridge_test ); ?>"<?php echo $bridge_target; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>>Run Internal Token Test</a>
+					<?php endif; ?>
+				</div>
+			</div>
+		</section>
+		<details class="pib-settings-section" open>
+			<summary>Token Check</summary>
+			<div class="pib-settings-section-body">
+				<?php $this->render_token_test_panel( $token_test, true, $toolkit_url ); ?>
+			</div>
+		</details>
+		<details class="pib-settings-section">
+			<summary>Setup Assistant</summary>
+			<div class="pib-settings-section-body">
+				<?php $this->render_bridge_setup_assistant_panel( $settings, true ); ?>
+			</div>
+		</details>
+		<details class="pib-settings-section">
+			<summary>Bridge Contract</summary>
+			<div class="pib-settings-section-body">
+				<?php $this->render_bridge_contract_panel( $settings, true ); ?>
+			</div>
+		</details>
+		<details class="pib-settings-section">
+			<summary>Bridge Simulator</summary>
+			<div class="pib-settings-section-body">
+				<?php
+				$this->render_bridge_simulator_notice();
+				$this->render_bridge_simulator_panel( $settings, true );
+				?>
+			</div>
+		</details>
+		<?php
+	}
+
+	/**
+	 * Preserve hidden checkbox values for fields not rendered in current form.
+	 *
+	 * @param array<string, mixed> $settings     Current settings.
+	 * @param array<int, string>   $visible_keys Keys rendered as visible controls.
+	 *
+	 * @return void
+	 */
+	private function render_hidden_checkbox_preserve_inputs( $settings, $visible_keys = array() ) {
+		$settings     = is_array( $settings ) ? $settings : array();
+		$visible_keys = is_array( $visible_keys ) ? array_map( 'sanitize_key', $visible_keys ) : array();
+		$schema       = PIB_Settings_Contract::schema();
+
+		foreach ( $schema as $key => $definition ) {
+			$key = sanitize_key( (string) $key );
+			if ( '' === $key || ! is_array( $definition ) || empty( $definition['ui'] ) ) {
+				continue;
+			}
+			if ( in_array( $key, $visible_keys, true ) ) {
+				continue;
+			}
+			$type = isset( $definition['type'] ) ? (string) $definition['type'] : 'text';
+			if ( 'checkbox' !== $type ) {
+				continue;
+			}
+
+			$value = ! empty( $settings[ $key ] ) ? '1' : '0';
+			printf(
+				'<input type="hidden" name="%1$s[%2$s]" value="%3$s" />',
+				esc_attr( PIB_Plugin::OPTION_KEY ),
+				esc_attr( $key ),
+				esc_attr( $value )
+			);
+		}
 	}
 
 	/**
@@ -739,13 +1137,11 @@ final class PIB_Settings {
 		$default_dest = isset( $settings['default_destination'] ) ? (string) $settings['default_destination'] : '/dashboard';
 		$shopify_test_url = $this->build_shopify_test_url( $settings, $default_dest );
 		$bridge_test_url  = $this->build_bridge_simulator_quick_url( $settings, $default_dest );
-		$assistant_tool_url = $this->tools_tab_url( 'advanced', 'setup_assistant' );
-		$token_tool_url     = $this->tools_tab_url( 'advanced', 'token' );
-		$contract_tool_url  = $this->tools_tab_url( 'advanced', 'bridge_contract' );
+		$toolkit_url      = $this->settings_tool_url( 'toolkit' );
 		$can_bridge_test  = $this->can_run_bridge_simulator_quick( $settings );
-		$shopify_action_url = '' !== $shopify_test_url ? $shopify_test_url : $assistant_tool_url;
+		$shopify_action_url = '' !== $shopify_test_url ? $shopify_test_url : $toolkit_url;
 		$shopify_target_attr = '' !== $shopify_test_url ? ' target="_blank" rel="noopener noreferrer"' : '';
-		$bridge_action_url = '' !== $bridge_test_url ? $bridge_test_url : $assistant_tool_url;
+		$bridge_action_url = '' !== $bridge_test_url ? $bridge_test_url : $toolkit_url;
 		$bridge_target_attr = '' !== $bridge_test_url ? ' target="_blank" rel="noopener noreferrer"' : '';
 		?>
 		<section class="pib-core-card">
@@ -773,9 +1169,7 @@ final class PIB_Settings {
 				<div class="pib-test-actions">
 					<a class="button button-primary" href="<?php echo esc_url( $shopify_action_url ); ?>"<?php echo $shopify_target_attr; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>>Test Shopify Bridge Route</a>
 					<a class="button" href="<?php echo esc_url( $bridge_action_url ); ?>"<?php echo $bridge_target_attr; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>>Run Internal Token Test</a>
-					<a class="button" href="<?php echo esc_url( $assistant_tool_url ); ?>">Open Setup Assistant</a>
-					<a class="button" href="<?php echo esc_url( $token_tool_url ); ?>">Open Token Check</a>
-					<a class="button" href="<?php echo esc_url( $contract_tool_url ); ?>">Open Bridge Contract</a>
+					<a class="button" href="<?php echo esc_url( $toolkit_url ); ?>">Open Bridge Toolkit</a>
 				</div>
 				<p class="description">The external route test must eventually return to WordPress intake with a signed JWT token payload (POST recommended; legacy query transport is optional).</p>
 				<?php $this->render_bridge_readiness_panel( $settings, $can_bridge_test ); ?>
@@ -864,9 +1258,10 @@ final class PIB_Settings {
 		$default_dest   = isset( $settings['default_destination'] ) ? (string) $settings['default_destination'] : '/dashboard';
 		$shopify_test   = $this->build_shopify_test_url( $settings, $default_dest );
 		$bridge_test    = $this->build_bridge_simulator_quick_url( $settings, $default_dest );
-		$token_tool_url    = $this->tools_tab_url( 'advanced', 'token' );
-		$contract_tool_url = $this->tools_tab_url( 'advanced', 'bridge_contract' );
-		$diag_tool_url     = $this->tools_tab_url( 'advanced', 'diagnostics' );
+		$toolkit_url       = $this->settings_tool_url( 'toolkit' );
+		$token_tool_url    = $toolkit_url;
+		$contract_tool_url = $toolkit_url;
+		$diag_tool_url     = $this->tools_tab_url( 'observability', 'diagnostics' );
 		$can_bridge_test = $this->can_run_bridge_simulator_quick( $settings );
 
 		$actions = array();
@@ -1134,7 +1529,7 @@ final class PIB_Settings {
 			array(
 				array(
 					'label' => 'Bridge Contract',
-					'url'   => $this->tools_tab_url( 'advanced', 'bridge_contract' ),
+					'url'   => $this->settings_tool_url( 'toolkit' ),
 				),
 			)
 		);
@@ -1146,7 +1541,7 @@ final class PIB_Settings {
 			array(
 				array(
 					'label' => 'Route Access',
-					'url'   => $this->tools_tab_url( 'advanced', 'routes' ),
+					'url'   => $this->tools_tab_url( 'observability', 'routes' ),
 				),
 			)
 		);
@@ -1174,11 +1569,11 @@ final class PIB_Settings {
 			array(
 				array(
 					'label' => 'Open Diagnostics',
-					'url'   => $this->tools_tab_url( 'advanced', 'diagnostics' ),
+					'url'   => $this->tools_tab_url( 'observability', 'diagnostics' ),
 				),
 				array(
 					'label' => 'Health',
-					'url'   => $this->tools_tab_url( 'health' ),
+					'url'   => $this->tools_tab_url( 'observability', 'health' ),
 				),
 			)
 		);
@@ -1188,7 +1583,7 @@ final class PIB_Settings {
 			<h3>Next Actions</h3>
 			<ol class="pib-rail-steps">
 				<li>Save setup changes before testing bridge launch URLs.</li>
-				<li>Run <a href="<?php echo esc_url( $this->tools_tab_url( 'advanced', 'bridge_contract' ) ); ?>">Bridge Contract</a> and verify app route params.</li>
+				<li>Open <a href="<?php echo esc_url( $this->settings_tool_url( 'toolkit' ) ); ?>">Bridge Toolkit</a> and verify Bridge Contract + Token Check.</li>
 				<li>Use <a href="<?php echo esc_url( $this->tools_tab_url( 'failures' ) ); ?>">Mapping Failures</a> for real-login denial reasons.</li>
 			</ol>
 		</section>
@@ -1445,15 +1840,27 @@ final class PIB_Settings {
 	/**
 	 * Build Setup page URL.
 	 *
+	 * @param string $view   Optional setup view (`home`, `module`, `toolkit`).
+	 * @param string $module Optional module slug when `$view` is `module`.
+	 *
 	 * @return string
 	 */
-	private function settings_tool_url() {
-		return add_query_arg(
-			array(
-				'page' => 'pib-settings',
-			),
-			admin_url( 'admin.php' )
+	private function settings_tool_url( $view = 'home', $module = '' ) {
+		$args = array(
+			'page' => 'pib-settings',
 		);
+
+		$view = sanitize_key( (string) $view );
+		if ( in_array( $view, array( 'home', 'module', 'toolkit' ), true ) && 'home' !== $view ) {
+			$args['view'] = $view;
+		}
+
+		$module = sanitize_key( (string) $module );
+		if ( 'module' === $view && '' !== $module ) {
+			$args['module'] = $module;
+		}
+
+		return add_query_arg( $args, admin_url( 'admin.php' ) );
 	}
 
 	/**
@@ -2248,10 +2655,10 @@ final class PIB_Settings {
 		$shopify_test_url = $this->build_shopify_test_url( $settings, $default_dest );
 		$bridge_test_url  = $this->build_bridge_simulator_quick_url( $settings, $default_dest );
 		$can_bridge_test  = $this->can_run_bridge_simulator_quick( $settings );
-		$contract_tool_url = $this->tools_tab_url( 'advanced', 'bridge_contract' );
-		$token_tool_url    = $this->tools_tab_url( 'advanced', 'token' );
+		$contract_tool_url = $this->settings_tool_url( 'toolkit' );
+		$token_tool_url    = $this->settings_tool_url( 'toolkit' );
 		$failures_url      = $this->tools_tab_url( 'failures' );
-		$assistant_tool_url = $this->tools_tab_url( 'advanced', 'setup_assistant' );
+		$assistant_tool_url = $this->settings_tool_url( 'toolkit' );
 		$shopify_action_url = '' !== $shopify_test_url ? $shopify_test_url : $assistant_tool_url;
 		$shopify_target_attr = '' !== $shopify_test_url ? ' target="_blank" rel="noopener noreferrer"' : '';
 		$bridge_action_url = '' !== $bridge_test_url ? $bridge_test_url : $assistant_tool_url;
@@ -2311,6 +2718,8 @@ final class PIB_Settings {
 			<li><code>WP_ISSUER</code> = <code><?php echo esc_html( '' !== $issuer ? $issuer : 'your Issuer (iss) value' ); ?></code></li>
 			<li><code>WP_AUDIENCE</code> = <code><?php echo esc_html( '' !== $client_id ? $client_id : 'your Client ID' ); ?></code></li>
 			<li><code>COMPANY_ID</code> = <code><?php echo esc_html( $require_company ? 'default (or your company id)' : '(optional)' ); ?></code></li>
+			<li><code>SHOPIFY_SHOP_NAME</code> = <code><?php echo esc_html( '' !== $portal_url ? (string) wp_parse_url( $portal_url, PHP_URL_HOST ) : 'your-shop.myshopify.com' ); ?></code> (recommended for strict proxy shop checks)</li>
+			<li><code>SHOPIFY_CLIENT_ID</code> / <code>SHOPIFY_CLIENT_SECRET</code> = only needed for seamless first-time auto-activation from Shopify verified email lookup</li>
 		</ul>
 		<p class="description">Pass through launch <code>state</code> unchanged, include it in JWT claims, and submit <code>token</code> + <code>state</code> to intake via POST.</p>
 		<h3>Step 4: Verify End-to-End</h3>
@@ -2369,6 +2778,26 @@ final class PIB_Settings {
 				'value' => ! empty( $settings['require_company_id'] ) ? 'default' : '(optional)',
 				'notes' => $company_hint,
 			),
+			array(
+				'name'  => 'SHOPIFY_SHOP_NAME',
+				'value' => '' !== $shopify_url ? (string) wp_parse_url( $shopify_url, PHP_URL_HOST ) : '(optional: your-shop.myshopify.com)',
+				'notes' => 'Recommended for strict shop-domain verification and customer profile lookup.',
+			),
+			array(
+				'name'  => 'SHOPIFY_CLIENT_ID',
+				'value' => '(optional)',
+				'notes' => 'Required only for seamless first-time auto-activation via Shopify verified email lookup.',
+			),
+			array(
+				'name'  => 'SHOPIFY_CLIENT_SECRET',
+				'value' => '(required)',
+				'notes' => 'Used for app proxy signature verification; also used for client-credentials token if auto-activation lookup is enabled.',
+			),
+			array(
+				'name'  => 'SHOPIFY_API_VERSION',
+				'value' => '2026-01',
+				'notes' => 'Optional override for Shopify Admin API version used in customer verified-email lookup.',
+			),
 		);
 		$handoff_fields_demo = 'token=<jwt>&state=<state>';
 
@@ -2424,6 +2853,8 @@ final class PIB_Settings {
 				<tr><td><code>dest</code></td><td><code><?php echo esc_html( $default_dest ); ?></code></td><td>Must match Allowed Destination Prefixes.</td></tr>
 				<tr><td><code>state</code></td><td><code>launch state</code></td><td>Must match launch query <code>state</code> and intake POST <code>state</code>.</td></tr>
 				<tr><td><code>email</code></td><td><code>customer email</code></td><td>Recommended for auto-link/auto-create behavior.</td></tr>
+				<tr><td><code>email_verified</code></td><td><code>true/false</code></td><td>Optional. Set to <code>true</code> only when verified via trusted Shopify customer lookup.</td></tr>
+				<tr><td><code>email_verification_source</code></td><td><code>shopify_admin</code></td><td>Optional. Required for trusted seamless first-time auto-activation.</td></tr>
 			</tbody>
 		</table>
 		<h3>Where Each Piece Goes</h3>
@@ -2487,7 +2918,7 @@ final class PIB_Settings {
 		<ol>
 			<li>WordPress sends user to Shopify app proxy URL with <code>return_url</code>, <code>intake</code>, <code>dest</code>, <code>client_id</code>, and <code>state</code>.</li>
 			<li>Shopify app proxy forwards request to your worker/backend endpoint.</li>
-			<li>Worker/backend detects logged-in customer, signs JWT with shared secret, and serves an auto-submit HTML form POST to WordPress intake.</li>
+			<li>Worker/backend detects logged-in customer, optionally checks Shopify customer verified-email state, signs JWT with shared secret, and serves an auto-submit HTML form POST to WordPress intake.</li>
 			<li>WordPress verifies JWT, resolves mapping/user, and creates WordPress session.</li>
 		</ol>
 		<?php
@@ -2616,7 +3047,24 @@ final class PIB_Settings {
 		}
 
 		$template = <<<'JS'
+let shopifyTokenCache = {
+  accessToken: null,
+  expiresAtMs: 0
+};
+
 const MAX_PROXY_TIMESTAMP_SKEW_SECONDS = 300;
+const DEFAULT_SHOPIFY_API_VERSION = "2026-01";
+
+const SHOPIFY_CUSTOMER_QUERY = `
+query GetCustomerForPortalBridge($id: ID!) {
+  customer(id: $id) {
+    id
+    legacyResourceId
+    email
+    verifiedEmail
+  }
+}
+`;
 
 export default {
   async fetch(request, env) {
@@ -2629,7 +3077,6 @@ export default {
     const defaultCompanyId = __DEFAULT_COMPANY_ID__;
     const defaultShop = __DEFAULT_SHOP__;
 
-    // Optional health endpoint.
     if (url.pathname === "/health") {
       return jsonResponse({
         ok: true,
@@ -2637,7 +3084,6 @@ export default {
       });
     }
 
-    // Debug endpoint without exposing secrets.
     if (url.pathname === "/debug-shopify-config") {
       const rawShop = env.SHOPIFY_SHOP_NAME || defaultShop || "";
       const cleanShop = rawShop ? normalizeShopDomain(rawShop) : "";
@@ -2645,29 +3091,30 @@ export default {
         ok: true,
         rawShop,
         cleanShop,
-        hasClientSecret: Boolean(env.SHOPIFY_CLIENT_SECRET),
+        hasProxySecret: Boolean(env.SHOPIFY_CLIENT_SECRET),
         hasJwtSecret: Boolean(env.WP_JWT_SECRET),
         hasIssuer: Boolean(env.WP_ISSUER || defaultIssuer),
-        hasAudience: Boolean(env.WP_AUDIENCE || defaultClientId)
+        hasAudience: Boolean(env.WP_AUDIENCE || defaultClientId),
+        hasShopifyClientId: Boolean(env.SHOPIFY_CLIENT_ID),
+        hasShopifyClientSecret: Boolean(env.SHOPIFY_CLIENT_SECRET),
+        apiVersion: env.SHOPIFY_API_VERSION || DEFAULT_SHOPIFY_API_VERSION
       });
     }
 
-    // Verify Shopify app proxy signature before trusting forwarded params.
-    const proxyVerification = await verifyShopifyAppProxyRequest(
-      url,
-      env.SHOPIFY_CLIENT_SECRET,
-      env.SHOPIFY_SHOP_NAME || defaultShop || ""
-    );
+    const expectedShop = env.SHOPIFY_SHOP_NAME || defaultShop || "";
+    const proxyVerification = await verifyShopifyAppProxyRequest(url, env.SHOPIFY_CLIENT_SECRET, expectedShop);
     if (!proxyVerification.ok) {
       return new Response(proxyVerification.error, { status: 403 });
     }
+    const requestShop = (url.searchParams.get("shop") || "").trim();
+    const shopForLookup = expectedShop || requestShop;
 
     const intake = url.searchParams.get("intake") || url.searchParams.get("return_url") || defaultIntake;
     const dest = url.searchParams.get("dest") || defaultDest;
     const clientId = url.searchParams.get("client_id") || env.WP_AUDIENCE || defaultClientId;
     const handoffState = url.searchParams.get("state") || "";
     const shopifyCustomerId = url.searchParams.get("logged_in_customer_id");
-    const customerEmail = url.searchParams.get("logged_in_customer_email") || "";
+    const customerEmailFromProxy = url.searchParams.get("logged_in_customer_email") || "";
 
     if (!intake) return new Response("Missing intake/return_url", { status: 400 });
     if (!handoffState) return new Response("Missing state from WordPress launch", { status: 400 });
@@ -2688,6 +3135,13 @@ export default {
       return new Response("Invalid intake URL", { status: 400 });
     }
 
+    const customerProfile = await loadTrustedCustomerProfile({
+      env,
+      shopName: shopForLookup,
+      customerId: String(shopifyCustomerId),
+      fallbackEmail: customerEmailFromProxy
+    });
+
     const now = Math.floor(Date.now() / 1000);
     const claims = {
       iss: issuer,
@@ -2699,7 +3153,10 @@ export default {
       shopify_customer_id: String(shopifyCustomerId),
       company_id: env.COMPANY_ID || defaultCompanyId || "default",
       dest,
-      email: customerEmail,
+      email: customerProfile.email || "",
+      email_verified: Boolean(customerProfile.emailVerified),
+      email_verification_source: customerProfile.verificationSource || "proxy_param",
+      email_verification_checked_at: now,
       state: handoffState
     };
 
@@ -2718,6 +3175,181 @@ export default {
     });
   }
 };
+
+async function loadTrustedCustomerProfile({ env, shopName, customerId, fallbackEmail }) {
+  const fallback = {
+    email: sanitizeEmailLike(fallbackEmail),
+    emailVerified: false,
+    verificationSource: "proxy_param"
+  };
+
+  if (!shopName || !env.SHOPIFY_CLIENT_ID || !env.SHOPIFY_CLIENT_SECRET) {
+    return fallback;
+  }
+
+  let normalizedShop = "";
+  try {
+    normalizedShop = normalizeShopDomain(shopName);
+  } catch {
+    return fallback;
+  }
+
+  const customerGid = toShopifyCustomerGid(customerId);
+  if (!customerGid) {
+    return fallback;
+  }
+
+  try {
+    const apiVersion = env.SHOPIFY_API_VERSION || DEFAULT_SHOPIFY_API_VERSION;
+    const accessToken = await getShopifyAccessToken({
+      shopName: normalizedShop,
+      clientId: env.SHOPIFY_CLIENT_ID,
+      clientSecret: env.SHOPIFY_CLIENT_SECRET
+    });
+
+    const customer = await fetchShopifyCustomerProfile({
+      shopName: normalizedShop,
+      accessToken,
+      apiVersion,
+      customerGid
+    });
+
+    if (!customer) {
+      return fallback;
+    }
+
+    const email = sanitizeEmailLike(customer.email) || fallback.email;
+    const verified = Boolean(customer.verifiedEmail);
+    return {
+      email,
+      emailVerified: verified,
+      verificationSource: verified ? "shopify_admin" : "proxy_param"
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+async function getShopifyAccessToken({ shopName, clientId, clientSecret }) {
+  const nowMs = Date.now();
+  if (
+    shopifyTokenCache.accessToken &&
+    shopifyTokenCache.expiresAtMs &&
+    shopifyTokenCache.expiresAtMs > nowMs + 60_000
+  ) {
+    return shopifyTokenCache.accessToken;
+  }
+
+  const shopDomain = normalizeShopDomain(shopName);
+  const endpoint = `https://${shopDomain}/admin/oauth/access_token`;
+  const body = new URLSearchParams();
+  body.set("grant_type", "client_credentials");
+  body.set("client_id", clientId);
+  body.set("client_secret", clientSecret);
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded"
+    },
+    body: body.toString()
+  });
+
+  const text = await response.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error("Token endpoint returned non-JSON response.");
+  }
+
+  if (!response.ok || !json.access_token) {
+    throw new Error(`Unable to get Shopify access token (${response.status}).`);
+  }
+
+  const expiresInSeconds = Number(json.expires_in || 86399);
+  shopifyTokenCache = {
+    accessToken: json.access_token,
+    expiresAtMs: Date.now() + expiresInSeconds * 1000
+  };
+
+  return json.access_token;
+}
+
+async function fetchShopifyCustomerProfile({ shopName, accessToken, apiVersion, customerGid }) {
+  const data = await shopifyGraphQL({
+    shopName,
+    accessToken,
+    apiVersion,
+    query: SHOPIFY_CUSTOMER_QUERY,
+    variables: { id: customerGid }
+  });
+
+  if (!data || !data.customer) {
+    return null;
+  }
+
+  const customer = data.customer;
+  const legacyId = customer.legacyResourceId != null ? String(customer.legacyResourceId) : "";
+  if (legacyId && customerGid !== `gid://shopify/Customer/${legacyId}`) {
+    return null;
+  }
+
+  return {
+    email: typeof customer.email === "string" ? customer.email : "",
+    verifiedEmail: Boolean(customer.verifiedEmail)
+  };
+}
+
+async function shopifyGraphQL({ shopName, accessToken, apiVersion, query, variables }) {
+  const shopDomain = normalizeShopDomain(shopName);
+  const endpoint = `https://${shopDomain}/admin/api/${apiVersion}/graphql.json`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-Shopify-Access-Token": accessToken
+    },
+    body: JSON.stringify({ query, variables })
+  });
+
+  const text = await response.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error("Shopify returned non-JSON response.");
+  }
+
+  if (!response.ok) {
+    throw new Error(`Shopify API failed (${response.status}).`);
+  }
+  if (json.errors) {
+    throw new Error("Shopify GraphQL returned errors.");
+  }
+
+  return json.data || null;
+}
+
+function toShopifyCustomerGid(customerId) {
+  const id = String(customerId || "").trim();
+  if (!id) return "";
+  if (id.startsWith("gid://shopify/Customer/")) {
+    return id;
+  }
+  if (!/^\d+$/.test(id)) {
+    return "";
+  }
+  return `gid://shopify/Customer/${id}`;
+}
+
+function sanitizeEmailLike(value) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!email || !email.includes("@")) {
+    return "";
+  }
+  return email;
+}
 
 async function verifyShopifyAppProxyRequest(url, sharedSecret, expectedShopDomain = "") {
   if (!sharedSecret) {
@@ -2753,11 +3385,6 @@ async function verifyShopifyAppProxyRequest(url, sharedSecret, expectedShopDomai
     return { ok: false, error: "Stale app proxy request" };
   }
 
-  // Canonical payload:
-  // - remove "signature"
-  // - for duplicate keys, join values by comma
-  // - sort key=value fragments
-  // - concatenate with no delimiter
   const grouped = new Map();
   for (const [key, value] of url.searchParams.entries()) {
     if (key === "signature") continue;

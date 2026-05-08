@@ -79,6 +79,7 @@ final class PIB_Plugin {
 		require_once PIB_PLUGIN_DIR . 'includes/security/class-pib-destination.php';
 		require_once PIB_PLUGIN_DIR . 'includes/auth/class-pib-jwt-verifier.php';
 		require_once PIB_PLUGIN_DIR . 'includes/security/class-pib-security.php';
+		require_once PIB_PLUGIN_DIR . 'includes/auth/class-pib-registration-verifier.php';
 		require_once PIB_PLUGIN_DIR . 'includes/mapping/class-pib-customer-mapping.php';
 		require_once PIB_PLUGIN_DIR . 'includes/mapping/class-pib-authorization.php';
 		require_once PIB_PLUGIN_DIR . 'includes/access/class-pib-protected-route-policy.php';
@@ -152,6 +153,7 @@ final class PIB_Plugin {
 	 */
 	private function register_core_modules( PIB_Module_Registry $registry ) {
 		$registry->register_class( 'settings', 'PIB_Settings' );
+		$registry->register_class( 'registration_verifier', 'PIB_Registration_Verifier' );
 		$registry->register_class( 'customer_mapping', 'PIB_Customer_Mapping' );
 		$registry->register_class( 'protected_access', 'PIB_Protected_Access' );
 		$registry->register_class( 'spark_launch', 'PIB_Spark_Launch' );

@@ -78,6 +78,8 @@ final class PIB_Audit_Log {
 		add_action( 'pib_material_download', array( $this, 'log_material_download' ), 10, 3 );
 		add_action( 'pib_mapping_upsert', array( $this, 'log_mapping_upsert' ), 10, 2 );
 		add_action( 'pib_mapping_resolution_denied', array( $this, 'log_mapping_resolution_denied' ), 10, 2 );
+		add_action( 'pib_email_verification_required', array( $this, 'log_email_verification_required' ), 10, 1 );
+		add_action( 'pib_email_verification_completed', array( $this, 'log_email_verification_completed' ), 10, 3 );
 		add_action( 'pib_logout_requested', array( $this, 'log_logout_requested' ), 10, 2 );
 		add_action( 'pib_logout_completed', array( $this, 'log_logout_completed' ), 10, 3 );
 		add_action( 'pib_protected_access_denied', array( $this, 'log_protected_access_denied' ), 10, 3 );
@@ -582,6 +584,48 @@ final class PIB_Audit_Log {
 			'warning',
 			'Customer mapping resolution denied.',
 			$payload
+		);
+	}
+
+	/**
+	 * Hook: first-time email verification required.
+	 *
+	 * @param array<string, mixed> $context Verification context.
+	 *
+	 * @return void
+	 */
+	public function log_email_verification_required( $context ) {
+		$payload = is_array( $context ) ? $context : array();
+
+		$this->log(
+			'email_verification_required',
+			'info',
+			'First-time email verification required.',
+			$payload
+		);
+	}
+
+	/**
+	 * Hook: first-time email verification completed.
+	 *
+	 * @param array<string, mixed> $claims     Verification claims.
+	 * @param int                  $user_id    User ID.
+	 * @param int                  $mapping_id Mapping ID.
+	 *
+	 * @return void
+	 */
+	public function log_email_verification_completed( $claims, $user_id, $mapping_id ) {
+		$claims = is_array( $claims ) ? $claims : array();
+		$this->log(
+			'email_verification_completed',
+			'info',
+			'First-time email verification completed.',
+			array(
+				'user_id'             => absint( $user_id ),
+				'mapping_id'          => absint( $mapping_id ),
+				'shopify_customer_id' => PIB_Customer_Mapping::customer_id_from_claims( $claims ),
+				'company_id'          => PIB_Customer_Mapping::company_id_from_claims( $claims ),
+			)
 		);
 	}
 

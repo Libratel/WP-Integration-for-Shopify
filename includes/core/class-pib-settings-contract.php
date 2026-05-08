@@ -260,6 +260,52 @@ final class PIB_Settings_Contract {
 				'label'       => 'New User Role',
 				'ui'          => true,
 			),
+			'first_time_verification_enabled' => array(
+				'type'        => 'checkbox',
+				'default'     => 1,
+				'section'     => 'user_mapping',
+				'label'       => 'Require Email Verification for First-Time Users',
+				'description' => 'Require a one-time email verification link before activating first-time customer mappings.',
+				'ui'          => true,
+			),
+			'first_time_auto_activate_from_verified_claim' => array(
+				'type'        => 'checkbox',
+				'default'     => 1,
+				'section'     => 'user_mapping',
+				'label'       => 'Auto-Activate First-Time Users From Verified Shopify Claim',
+				'description' => 'Allow seamless first-time activation only when token claims include trusted Shopify-verified email proof.',
+				'ui'          => true,
+			),
+			'verification_token_ttl_seconds' => array(
+				'type'        => 'int_range',
+				'default'     => 900,
+				'section'     => 'user_mapping',
+				'label'       => 'Verification Link TTL (seconds)',
+				'placeholder' => '900',
+				'min'         => 300,
+				'max'         => 3600,
+				'ui'          => true,
+			),
+			'verification_resend_cooldown_seconds' => array(
+				'type'        => 'int_range',
+				'default'     => 60,
+				'section'     => 'user_mapping',
+				'label'       => 'Verification Resend Cooldown (seconds)',
+				'placeholder' => '60',
+				'min'         => 30,
+				'max'         => 1800,
+				'ui'          => true,
+			),
+			'verification_max_sends_per_hour' => array(
+				'type'        => 'int_range',
+				'default'     => 5,
+				'section'     => 'user_mapping',
+				'label'       => 'Verification Max Emails per Hour',
+				'placeholder' => '5',
+				'min'         => 1,
+				'max'         => 60,
+				'ui'          => true,
+			),
 			'managed_session_ttl_hours' => array(
 				'type'        => 'int_range',
 				'default'     => 4,
@@ -268,6 +314,34 @@ final class PIB_Settings_Contract {
 				'placeholder' => '4',
 				'min'         => 1,
 				'max'         => 720,
+				'ui'          => true,
+			),
+			'session_client_fingerprint_enabled' => array(
+				'type'        => 'checkbox',
+				'default'     => 1,
+				'section'     => 'session_logout',
+				'label'       => 'Bind Managed Sessions to Client Fingerprint',
+				'description' => 'Tie managed sessions to user-agent, IP prefix, and WP session token to reduce replay risk.',
+				'ui'          => true,
+			),
+			'session_ip_prefix_v4' => array(
+				'type'        => 'int_range',
+				'default'     => 24,
+				'section'     => 'session_logout',
+				'label'       => 'IPv4 Fingerprint Prefix Length',
+				'placeholder' => '24',
+				'min'         => 16,
+				'max'         => 32,
+				'ui'          => true,
+			),
+			'session_ip_prefix_v6' => array(
+				'type'        => 'int_range',
+				'default'     => 56,
+				'section'     => 'session_logout',
+				'label'       => 'IPv6 Fingerprint Prefix Length',
+				'placeholder' => '56',
+				'min'         => 32,
+				'max'         => 128,
 				'ui'          => true,
 			),
 			'periodic_revalidation_enabled' => array(
@@ -785,6 +859,48 @@ final class PIB_Settings_Contract {
 			);
 		}
 
+		if ( empty( $settings['first_time_verification_enabled'] ) ) {
+			self::add_warning(
+				$results,
+				'first_time_verification_disabled',
+				'First-time email verification is disabled. Newly auto-created or auto-linked accounts will activate immediately.'
+			);
+		} else {
+			self::add_ok(
+				$results,
+				'first_time_verification_enabled',
+				'First-time email verification is enabled.'
+			);
+
+			if ( ! empty( $settings['first_time_auto_activate_from_verified_claim'] ) ) {
+				self::add_ok(
+					$results,
+					'first_time_auto_activate_verified_claim',
+					'First-time mappings can auto-activate only when Shopify verified-email proof is present in claims.'
+				);
+			} else {
+				self::add_warning(
+					$results,
+					'first_time_auto_activate_disabled',
+					'Trusted Shopify verified-email auto-activation is disabled; first-time users must verify by email link.'
+				);
+			}
+		}
+
+		if ( empty( $settings['session_client_fingerprint_enabled'] ) ) {
+			self::add_warning(
+				$results,
+				'session_fingerprint_disabled',
+				'Managed session client fingerprint binding is disabled. This reduces replay protection for stolen cookies.'
+			);
+		} else {
+			self::add_ok(
+				$results,
+				'session_fingerprint_enabled',
+				'Managed session client fingerprint binding is enabled.'
+			);
+		}
+
 		$ttl_minutes = max( 1, absint( isset( $settings['managed_session_ttl_hours'] ) ? $settings['managed_session_ttl_hours'] : 1 ) ) * 60;
 		$revalidate  = max( 1, absint( isset( $settings['revalidate_interval_minutes'] ) ? $settings['revalidate_interval_minutes'] : 1 ) );
 		if ( ! empty( $settings['periodic_revalidation_enabled'] ) && $revalidate > $ttl_minutes ) {
@@ -889,6 +1005,9 @@ final class PIB_Settings_Contract {
 				'backorders'     => ! empty( $settings['backorders_enabled'] ) ? 'enabled' : 'disabled',
 				'coord_logout'   => ! empty( $settings['coordinated_logout_enabled'] ) ? 'enabled' : 'disabled',
 				'revalidation'   => ! empty( $settings['periodic_revalidation_enabled'] ) ? 'enabled' : 'disabled',
+				'first_time_verification' => ! empty( $settings['first_time_verification_enabled'] ) ? 'enabled' : 'disabled',
+				'first_time_auto_activate' => ! empty( $settings['first_time_auto_activate_from_verified_claim'] ) ? 'enabled' : 'disabled',
+				'session_fingerprint' => ! empty( $settings['session_client_fingerprint_enabled'] ) ? 'enabled' : 'disabled',
 				'protected_prefixes' => (string) count( PIB_Destination::sanitize_prefixes( isset( $settings['protected_route_prefixes'] ) ? $settings['protected_route_prefixes'] : array(), true ) ),
 				'unprotected_prefixes' => (string) count( PIB_Destination::sanitize_prefixes( isset( $settings['unprotected_route_prefixes'] ) ? $settings['unprotected_route_prefixes'] : array(), false ) ),
 			),
