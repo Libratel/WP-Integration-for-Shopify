@@ -100,6 +100,8 @@ final class PIB_Session_Policy {
 
 		add_action( 'pib_auth_intake_success', array( $this, 'mark_managed_session' ), 10, 2 );
 		add_action( 'wp_login', array( $this, 'clear_managed_session_for_login' ), 20, 2 );
+		add_action( 'admin_init', array( $this, 'restrict_wp_admin_for_portal_customers' ), 1 );
+		add_filter( 'show_admin_bar', array( $this, 'filter_show_admin_bar_for_portal_customers' ), 20 );
 		add_action( 'init', array( $this, 'enforce_policy' ), 2 );
 		add_action( 'admin_post_pib_logout', array( $this, 'handle_logout' ) );
 		add_action( 'admin_post_nopriv_pib_logout', array( $this, 'handle_logout' ) );
@@ -395,6 +397,78 @@ final class PIB_Session_Policy {
 		do_action( 'pib_logout_completed', absint( $user_id ), 'local', $context );
 		wp_safe_redirect( $local_redirect );
 		exit;
+	}
+
+	/**
+	 * Prevent Shopify customer role users from opening wp-admin screens.
+	 *
+	 * Keeps admin-post entrypoints available for bridge intake/logout actions.
+	 *
+	 * @return void
+	 */
+	public function restrict_wp_admin_for_portal_customers() {
+		if ( ! is_admin() || wp_doing_ajax() ) {
+			return;
+		}
+
+		// Keep admin-post flows available (auth intake, logout, verification, exports, etc.).
+		global $pagenow;
+		if ( 'admin-post.php' === (string) $pagenow ) {
+			return;
+		}
+
+		if ( ! is_user_logged_in() ) {
+			return;
+		}
+
+		if ( current_user_can( 'manage_options' ) ) {
+			return;
+		}
+
+		$user = wp_get_current_user();
+		if ( ! $user instanceof WP_User ) {
+			return;
+		}
+
+		if ( ! in_array( 'shopify_customer', (array) $user->roles, true ) ) {
+			return;
+		}
+
+		$settings    = $this->plugin->get_settings();
+		$destination = PIB_Destination::sanitize_destination(
+			isset( $settings['default_destination'] ) ? (string) $settings['default_destination'] : '/dashboard',
+			'/dashboard'
+		);
+
+		wp_safe_redirect( PIB_Destination::to_absolute_url( $destination ) );
+		exit;
+	}
+
+	/**
+	 * Hide frontend admin bar for Shopify customer portal users.
+	 *
+	 * @param bool $show Current admin-bar visibility.
+	 * @return bool
+	 */
+	public function filter_show_admin_bar_for_portal_customers( $show ) {
+		if ( ! is_user_logged_in() ) {
+			return (bool) $show;
+		}
+
+		if ( current_user_can( 'manage_options' ) ) {
+			return (bool) $show;
+		}
+
+		$user = wp_get_current_user();
+		if ( ! $user instanceof WP_User ) {
+			return (bool) $show;
+		}
+
+		if ( in_array( 'shopify_customer', (array) $user->roles, true ) ) {
+			return false;
+		}
+
+		return (bool) $show;
 	}
 
 	/**
