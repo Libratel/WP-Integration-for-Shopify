@@ -14,6 +14,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 final class PIB_Session_Policy {
 	/**
+	 * Browser cookie marker used to prevent repeated auto-retry loops.
+	 */
+	const COOKIE_CLIENT_MISMATCH_RETRY = 'pib_client_mismatch_retry';
+
+	/**
 	 * Meta key: managed session marker.
 	 */
 	const META_MANAGED = 'pib_managed_session';
@@ -506,6 +511,10 @@ final class PIB_Session_Policy {
 		wp_logout();
 
 		$settings = $this->plugin->get_settings();
+		if ( $this->maybe_retry_client_binding_session( $reason, $settings ) ) {
+			exit;
+		}
+
 		$dest     = PIB_Destination::safe_failure_destination(
 			isset( $settings['failure_destination'] ) ? (string) $settings['failure_destination'] : '',
 			'/portal-login'
@@ -520,6 +529,122 @@ final class PIB_Session_Policy {
 
 		wp_safe_redirect( $url );
 		exit;
+	}
+
+	/**
+	 * Attempt one automatic managed-session re-auth for client-binding mismatch.
+	 *
+	 * @param string               $reason   Expiration reason code.
+	 * @param array<string, mixed> $settings Plugin settings.
+	 *
+	 * @return bool True when the retry flow handled output/redirect.
+	 */
+	private function maybe_retry_client_binding_session( $reason, $settings ) {
+		$reason = sanitize_key( (string) $reason );
+		if ( 'pib_session_client_binding_mismatch' !== $reason ) {
+			return false;
+		}
+
+		if ( $this->has_client_mismatch_retry_cookie() ) {
+			return false;
+		}
+
+		$signin = PIB_Signin_Link::instance( $this->plugin );
+		if ( ! $signin instanceof PIB_Signin_Link ) {
+			return false;
+		}
+
+		$settings    = is_array( $settings ) ? $settings : array();
+		$destination = PIB_Destination::current_request_destination();
+		$destination = PIB_Destination::sanitize_destination(
+			$destination,
+			isset( $settings['default_destination'] ) ? (string) $settings['default_destination'] : '/dashboard'
+		);
+
+		$signin_url = $signin->build_signin_url( $destination );
+		if ( '' === $signin_url ) {
+			return false;
+		}
+
+		$this->set_client_mismatch_retry_cookie( 180 );
+		$this->render_reconnect_wait_page( $signin_url );
+		return true;
+	}
+
+	/**
+	 * Check whether client-binding retry already ran recently for this browser.
+	 *
+	 * @return bool
+	 */
+	private function has_client_mismatch_retry_cookie() {
+		if ( ! isset( $_COOKIE[ self::COOKIE_CLIENT_MISMATCH_RETRY ] ) || ! is_scalar( $_COOKIE[ self::COOKIE_CLIENT_MISMATCH_RETRY ] ) ) {
+			return false;
+		}
+
+		return '1' === trim( (string) wp_unslash( $_COOKIE[ self::COOKIE_CLIENT_MISMATCH_RETRY ] ) );
+	}
+
+	/**
+	 * Set a short-lived retry cookie to prevent re-auth redirect loops.
+	 *
+	 * @param int $ttl_seconds Cookie lifetime in seconds.
+	 *
+	 * @return void
+	 */
+	private function set_client_mismatch_retry_cookie( $ttl_seconds ) {
+		if ( headers_sent() ) {
+			return;
+		}
+
+		$expires   = time() + max( 60, absint( $ttl_seconds ) );
+		$path      = defined( 'COOKIEPATH' ) && is_string( COOKIEPATH ) && '' !== COOKIEPATH ? COOKIEPATH : '/';
+		$domain    = defined( 'COOKIE_DOMAIN' ) && is_string( COOKIE_DOMAIN ) ? COOKIE_DOMAIN : '';
+		$secure    = is_ssl();
+		$http_only = true;
+
+		if ( PHP_VERSION_ID >= 70300 ) {
+			setcookie(
+				self::COOKIE_CLIENT_MISMATCH_RETRY,
+				'1',
+				array(
+					'expires'  => $expires,
+					'path'     => $path,
+					'domain'   => $domain,
+					'secure'   => $secure,
+					'httponly' => $http_only,
+					'samesite' => 'Lax',
+				)
+			);
+		} else {
+			setcookie( self::COOKIE_CLIENT_MISMATCH_RETRY, '1', $expires, $path, $domain, $secure, $http_only );
+		}
+
+		$_COOKIE[ self::COOKIE_CLIENT_MISMATCH_RETRY ] = '1';
+	}
+
+	/**
+	 * Render a lightweight interstitial while re-auth redirect starts.
+	 *
+	 * @param string $signin_url Next redirect URL.
+	 *
+	 * @return void
+	 */
+	private function render_reconnect_wait_page( $signin_url ) {
+		$signin_url = esc_url_raw( (string) $signin_url );
+		if ( '' === $signin_url ) {
+			return;
+		}
+
+		nocache_headers();
+		status_header( 200 );
+		$escaped_url = esc_url( $signin_url );
+
+		echo '<!doctype html><html><head><meta charset="utf-8" /><meta name="robots" content="noindex,nofollow" /><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Reconnecting Secure Session</title>';
+		echo '<meta http-equiv="refresh" content="1;url=' . esc_attr( $escaped_url ) . '" />';
+		echo '<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f6f7f7;color:#1d2327;margin:0;padding:24px;}main{max-width:560px;margin:8vh auto;background:#fff;border:1px solid #dcdcde;border-radius:8px;padding:20px 22px;}h1{font-size:20px;line-height:1.35;margin:0 0 10px 0;}p{margin:0 0 10px 0;line-height:1.5;}a.button{display:inline-block;margin-top:8px;padding:8px 14px;border-radius:6px;background:#2271b1;color:#fff;text-decoration:none;font-weight:600;}</style></head><body>';
+		echo '<main><h1>Please wait...</h1><p>We detected a session change and are reconnecting your secure portal session.</p><p>You should be redirected automatically in a moment.</p><p><a class="button" href="' . $escaped_url . '">Continue</a></p></main>';
+		echo '<script>window.setTimeout(function(){window.location.assign(' . wp_json_encode( $signin_url ) . ');}, 1000);</script>';
+		echo '</body></html>';
 	}
 
 	/**
